@@ -390,10 +390,15 @@ def pydantic_model_name(settings: AgentPluginSettings | ModelSettings) -> str:
 
 
 def pydantic_model_settings(settings: ModelSettings) -> dict[str, Any]:
-    return {
+    model_settings = {
         "temperature": settings.temperature,
         "max_tokens": settings.max_output_tokens,
     }
+    if settings.top_p > 0:
+        model_settings["top_p"] = settings.top_p
+    if settings.top_k > 0:
+        model_settings["top_k"] = settings.top_k
+    return model_settings
 
 
 async def list_provider_models(

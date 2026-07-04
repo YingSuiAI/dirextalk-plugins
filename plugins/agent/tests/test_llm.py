@@ -77,6 +77,8 @@ def test_create_agent_passes_temperature_and_token_settings() -> None:
                 model="deepseek-chat",
                 temperature=0.7,
                 max_output_tokens=4096,
+                top_p=0.8,
+                top_k=40,
             )
         ),
         client=FakeDirextalkClient(),
@@ -88,6 +90,8 @@ def test_create_agent_passes_temperature_and_token_settings() -> None:
     assert captured["model_settings"] == {
         "temperature": 0.7,
         "max_tokens": 4096,
+        "top_p": 0.8,
+        "top_k": 40,
     }
 
 

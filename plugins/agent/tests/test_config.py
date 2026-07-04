@@ -76,6 +76,8 @@ def test_settings_from_environment_accepts_model_tuning(monkeypatch) -> None:
     monkeypatch.setenv("AGENT_MAX_OUTPUT_TOKENS", "4096")
     monkeypatch.setenv("AGENT_CONTEXT_WINDOW", "64")
     monkeypatch.setenv("AGENT_REASONING_MODE", "deep")
+    monkeypatch.setenv("AGENT_TOP_P", "0.8")
+    monkeypatch.setenv("AGENT_TOP_K", "40")
 
     settings = settings_from_environment()
 
@@ -83,3 +85,5 @@ def test_settings_from_environment_accepts_model_tuning(monkeypatch) -> None:
     assert settings.model.max_output_tokens == 4096
     assert settings.model.context_window == 64
     assert settings.model.reasoning_mode == "deep"
+    assert settings.model.top_p == 0.8
+    assert settings.model.top_k == 40

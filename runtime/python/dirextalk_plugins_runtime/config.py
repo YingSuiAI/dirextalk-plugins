@@ -29,6 +29,8 @@ class ModelSettings(BaseModel):
     max_output_tokens: int = 2048
     context_window: int = 30
     reasoning_mode: str = ""
+    top_p: float = 0.0
+    top_k: int = 0
 
     @field_validator("model")
     @classmethod
@@ -115,6 +117,8 @@ def settings_from_environment() -> AgentPluginSettings:
             max_output_tokens=env_int("AGENT_MAX_OUTPUT_TOKENS", 2048),
             context_window=env_int("AGENT_CONTEXT_WINDOW", 30),
             reasoning_mode=os.getenv("AGENT_REASONING_MODE", ""),
+            top_p=env_float("AGENT_TOP_P", 0.0),
+            top_k=env_int("AGENT_TOP_K", 0),
         ),
         default_model_profile_id=os.getenv("AGENT_DEFAULT_MODEL_PROFILE_ID", ""),
         model_profiles=parse_model_list("AGENT_MODEL_PROFILES_JSON", ModelProfileSettings),
