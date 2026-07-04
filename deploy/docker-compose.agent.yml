@@ -1,0 +1,16 @@
+services:
+  agent-plugin:
+    image: docker.io/dirextalk/agent-plugin@sha256:4acd5a6e76fb8ba07b89adff210d21725a2c0801e087108b57a55d65d73a8e5a
+    restart: unless-stopped
+    environment:
+      DIREXTALK_BASE_URL: http://message-server:8008
+      DIREXTALK_AGENT_TOKEN: ${DIREXTALK_AGENT_TOKEN:?Set DIREXTALK_AGENT_TOKEN}
+      AGENT_MODEL_PROVIDER: ${AGENT_MODEL_PROVIDER:-deepseek}
+      AGENT_MODEL: ${AGENT_MODEL:-deepseek-chat}
+      AGENT_API_KEY_REF: env:DEEPSEEK_API_KEY
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:?Set DEEPSEEK_API_KEY}
+    labels:
+      io.dirextalk.plugin.id: io.dirextalk.agent
+      io.dirextalk.plugin.official: "true"
+    networks:
+      - default

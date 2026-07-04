@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "plugins": [
+    {
+      "id": "io.dirextalk.agent",
+      "name": "Dirextalk Agent",
+      "version": "0.1.0",
+      "description": "Official Dirextalk Agent plugin using Pydantic AI-compatible runtime.",
+      "min_base_version": "0.1.0",
+      "runtime": {
+        "type": "docker",
+        "image": "docker.io/dirextalk/agent-plugin",
+        "digest": "sha256:4acd5a6e76fb8ba07b89adff210d21725a2c0801e087108b57a55d65d73a8e5a"
+      },
+      "service": {
+        "protocol": "http",
+        "health": "/health",
+        "invoke": "/invoke"
+      },
+      "permissions": [
+        "matrix.messages.read",
+        "matrix.messages.send",
+        "rooms.members.read",
+        "mcp.call",
+        "skills.install"
+      ]
+    }
+  ]
+}

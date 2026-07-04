@@ -1,0 +1,35 @@
+wing: dirextalk_plugins
+rooms:
+- name: plugins
+  description: Files from plugins/
+  keywords:
+  - plugins
+  - plugins
+- name: catalog
+  description: Files from catalog/
+  keywords:
+  - catalog
+  - catalog
+- name: configuration
+  description: Files from deploy/
+  keywords:
+  - configuration
+  - deploy
+- name: documentation
+  description: Files from docs/
+  keywords:
+  - documentation
+  - docs
+- name: spec
+  description: Files from spec/
+  keywords:
+  - spec
+  - spec
+- name: runtime
+  description: Files from runtime/
+  keywords:
+  - runtime
+  - runtime
+- name: general
+  description: Files that don't fit other rooms
+  keywords: []

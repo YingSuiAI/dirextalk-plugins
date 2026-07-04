@@ -1,0 +1,14 @@
+.git
+.codegraph
+.venv
+.pytest_cache
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+plugins/agent/plugin.yaml
+plugins/agent/tests
+dist
+build
+.env
+.env.*
