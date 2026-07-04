@@ -77,6 +77,14 @@ class AgentService:
                     "model": self.settings.model.model,
                     "error": str(exc),
                 }
+            except Exception as exc:
+                return {
+                    "ok": False,
+                    "model_ready": True,
+                    "provider": self.settings.model.provider,
+                    "model": self.settings.model.model,
+                    "error": str(exc),
+                }
         if action == "agent.rooms.search":
             return await self.client.search_rooms(
                 query=str(params.get("query") or ""),
@@ -121,6 +129,17 @@ class AgentService:
                 "data": {
                     "ok": False,
                     "model_ready": False,
+                    "provider": self.settings.model.provider,
+                    "model": self.settings.model.model,
+                    "error": str(exc),
+                },
+            }
+        except Exception as exc:
+            yield {
+                "event": "error",
+                "data": {
+                    "ok": False,
+                    "model_ready": True,
                     "provider": self.settings.model.provider,
                     "model": self.settings.model.model,
                     "error": str(exc),

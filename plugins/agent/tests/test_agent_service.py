@@ -1,6 +1,13 @@
 import pytest
 
-from dirextalk_agent.llm import ModelInvocationUnavailable, PydanticAgentRuntime
+from dirextalk_agent import llm as llm_module
+from dirextalk_agent.llm import (
+    ModelInvocationUnavailable,
+    PydanticAgentRuntime,
+    mcp_server_id,
+    prompt_with_attachments,
+    skills_system_prompt,
+)
 from dirextalk_agent.service import AgentService
 from dirextalk_plugins_runtime import AgentPluginSettings, MCPServerConfig, SkillSource
 
@@ -49,6 +56,27 @@ class StreamingRuntime:
         yield {"event": "done", "data": {"text": "hello"}}
 
 
+class FailingRuntime:
+    async def chat(self, prompt: str, params: dict):
+        raise RuntimeError("tool failed")
+
+    async def stream_chat(self, prompt: str, params: dict):
+        raise RuntimeError("tool failed")
+        yield {"event": "done", "data": {}}
+
+
+class RecordingAgent:
+    def __init__(self, model: str, *, system_prompt: str = "", toolsets=None, **_kwargs):
+        self.model = model
+        self.system_prompt = system_prompt
+        self.toolsets = toolsets or []
+        self.tools: list[str] = []
+
+    def tool_plain(self, func):
+        self.tools.append(func.__name__)
+        return func
+
+
 def test_pydantic_agent_runtime_registers_dirextalk_tools_with_real_agent(monkeypatch: pytest.MonkeyPatch) -> None:
     from pydantic_ai import Agent
 
@@ -57,6 +85,76 @@ def test_pydantic_agent_runtime_registers_dirextalk_tools_with_real_agent(monkey
     runtime = PydanticAgentRuntime(settings=settings, client=FakeDirextalkClient())
 
     runtime._create_agent(Agent, settings.model)
+
+
+def test_enabled_skills_are_loaded_into_system_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(llm_module, "fetch_skill_instruction", lambda _skill: "Always review security-sensitive code.")
+    skill = SkillSource(
+        repo_url="https://github.com/example/agent-skills",
+        ref="main",
+        path="skills/code-review",
+        enabled=True,
+    )
+
+    prompt = skills_system_prompt([skill], {})
+
+    assert "Always review security-sensitive code." in prompt
+    assert "skills/code-review" in prompt
+
+
+def test_disabled_skills_are_not_loaded_into_system_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(llm_module, "fetch_skill_instruction", lambda _skill: "should not appear")
+    skill = SkillSource(
+        repo_url="https://github.com/example/agent-skills",
+        ref="main",
+        path="skills/code-review",
+        enabled=False,
+    )
+
+    assert skills_system_prompt([skill], {}) == ""
+
+
+def test_runtime_registers_builtin_config_tools_and_summarize_tool(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(llm_module, "build_mcp_toolsets", lambda _settings: ["mcp-toolset"])
+    settings = AgentPluginSettings()
+    runtime = PydanticAgentRuntime(settings=settings, client=FakeDirextalkClient())
+
+    agent = runtime._create_agent(RecordingAgent, settings.model)
+
+    assert agent.toolsets == ["mcp-toolset"]
+    assert "summarize_conversation" in agent.tools
+    assert "list_installed_skills" in agent.tools
+    assert "list_mcp_servers" in agent.tools
+
+
+def test_prompt_with_attachments_includes_text_content() -> None:
+    prompt = prompt_with_attachments(
+        "summarize this",
+        {
+            "attachments": [
+                {
+                    "name": "notes.txt",
+                    "mime_type": "text/plain",
+                    "size": 12,
+                    "text": "hello from file",
+                }
+            ]
+        },
+    )
+
+    assert "notes.txt" in prompt
+    assert "hello from file" in prompt
+
+
+def test_mcp_server_id_is_stable_and_safe() -> None:
+    server = MCPServerConfig(
+        name="Context 7 MCP",
+        transport="stdio",
+        command=["npx", "-y", "@upstash/context7-mcp"],
+        enabled=True,
+    )
+
+    assert mcp_server_id(server) == "context_7_mcp"
 
 
 @pytest.mark.asyncio
@@ -97,6 +195,16 @@ async def test_agent_chat_stream_returns_event_shape_and_profile_id() -> None:
         {"event": "delta", "data": {"text": "hel", "model_profile_id": "work"}},
         {"event": "done", "data": {"text": "hello"}},
     ]
+
+
+@pytest.mark.asyncio
+async def test_agent_chat_stream_reports_tool_errors() -> None:
+    service = AgentService(settings=AgentPluginSettings(), client=FakeDirextalkClient(), runtime=FailingRuntime())
+
+    events = [event async for event in service.stream("agent.chat.stream", {"prompt": "hello"})]
+
+    assert events[0]["event"] == "error"
+    assert "tool failed" in events[0]["data"]["error"]
 
 
 @pytest.mark.asyncio

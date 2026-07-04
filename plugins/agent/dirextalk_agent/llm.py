@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import AsyncIterator
 from typing import Any, Protocol
+from urllib.parse import urlparse
 
 import httpx
 
-from dirextalk_plugins_runtime import AgentPluginSettings, DirextalkClient, ModelProvider, ModelSettings
+from dirextalk_plugins_runtime import AgentPluginSettings, DirextalkClient, MCPServerConfig, ModelProvider, ModelSettings, SkillSource
 
 
 class ModelInvocationUnavailable(RuntimeError):
@@ -25,6 +27,7 @@ class PydanticAgentRuntime:
     def __init__(self, settings: AgentPluginSettings, client: DirextalkClient) -> None:
         self.settings = settings
         self.client = client
+        self._skill_instruction_cache: dict[str, str] = {}
 
     async def chat(self, prompt: str, params: dict[str, Any]) -> dict[str, Any]:
         model_settings = resolve_model_settings(self.settings, params)
@@ -37,7 +40,7 @@ class PydanticAgentRuntime:
         prepare_provider_environment(model_settings)
         agent = self._create_agent(Agent, model_settings)
 
-        result = await agent.run(prompt)
+        result = await agent.run(prompt_with_attachments(prompt, params))
         return {
             "ok": True,
             "model_ready": True,
@@ -58,7 +61,7 @@ class PydanticAgentRuntime:
         agent = self._create_agent(Agent, model_settings)
         if hasattr(agent, "run_stream"):
             text = ""
-            async with agent.run_stream(prompt) as result:
+            async with agent.run_stream(prompt_with_attachments(prompt, params)) as result:
                 stream_text = getattr(result, "stream_text", None)
                 if stream_text is not None:
                     async for delta in stream_text(delta=True):
@@ -87,7 +90,11 @@ class PydanticAgentRuntime:
         yield {"event": "done", "data": result}
 
     def _create_agent(self, agent_type: Any, model_settings: ModelSettings) -> Any:
-        agent = agent_type(pydantic_model_name(model_settings), system_prompt=self.settings.system_prompt)
+        agent = agent_type(
+            pydantic_model_name(model_settings),
+            system_prompt=self._system_prompt(),
+            toolsets=build_mcp_toolsets(self.settings),
+        )
 
         if "search_contacts" in self.settings.enabled_tools:
 
@@ -120,7 +127,203 @@ class PydanticAgentRuntime:
             async def send_message(room_id: str, msg: str) -> dict[str, Any]:
                 return await self.client.send_message(room_id=room_id, msg=msg)
 
+        if "summarize_conversation" in self.settings.enabled_tools:
+
+            @agent.tool_plain
+            async def summarize_conversation(room_id: str, limit: int = 100) -> dict[str, Any]:
+                messages = await self.client.list_messages(room_id=room_id, limit=limit)
+                return {"room_id": room_id, "summary": summarize_messages(messages)}
+
+        @agent.tool_plain
+        async def list_installed_skills() -> dict[str, Any]:
+            return {"skills": [skill.model_dump(mode="json") for skill in self.settings.skills]}
+
+        @agent.tool_plain
+        async def list_mcp_servers() -> dict[str, Any]:
+            return {
+                "servers": [
+                    builtin_mcp_summary(),
+                    *[server.model_dump(mode="json") for server in self.settings.mcp_servers],
+                ]
+            }
+
         return agent
+
+    def _system_prompt(self) -> str:
+        parts = [self.settings.system_prompt.strip() or "You are the local Dirextalk assistant."]
+        skills_prompt = skills_system_prompt(self.settings.skills, self._skill_instruction_cache)
+        if skills_prompt:
+            parts.append(skills_prompt)
+        mcp_prompt = mcp_system_prompt(self.settings.mcp_servers)
+        if mcp_prompt:
+            parts.append(mcp_prompt)
+        parts.append(
+            "Dirextalk built-in tools can search contacts and rooms, list messages, send messages, and summarize conversations when enabled."
+        )
+        return "\n\n".join(parts)
+
+
+def skills_system_prompt(skills: list[SkillSource], cache: dict[str, str] | None = None) -> str:
+    enabled = [skill for skill in skills if skill.enabled]
+    if not enabled:
+        return ""
+    cache = cache if cache is not None else {}
+    sections = ["Enabled Agent Skills. Follow these skill instructions when relevant:"]
+    for skill in enabled:
+        key = skill_cache_key(skill)
+        text = cache.get(key)
+        if text is None:
+            text = fetch_skill_instruction(skill)
+            cache[key] = text
+        sections.append(f"### {skill.path}\nSource: {skill.repo_url}#{skill.ref}\n{text}")
+    return "\n\n".join(sections)
+
+
+def fetch_skill_instruction(skill: SkillSource) -> str:
+    raw_url = github_skill_raw_url(skill)
+    if not raw_url:
+        return "Skill source is configured, but this version can only auto-load public GitHub skill repositories."
+    try:
+        response = httpx.get(raw_url, timeout=8.0, follow_redirects=True)
+        response.raise_for_status()
+    except Exception as exc:
+        return f"Skill source is configured but could not be loaded: {exc}"
+    text = response.text.strip()
+    if not text:
+        return "Skill source loaded but SKILL.md was empty."
+    return text[:12000]
+
+
+def github_skill_raw_url(skill: SkillSource) -> str:
+    parsed = urlparse(str(skill.repo_url))
+    if parsed.netloc.lower() != "github.com":
+        return ""
+    parts = [part for part in parsed.path.strip("/").split("/") if part]
+    if len(parts) < 2:
+        return ""
+    owner, repo = parts[0], parts[1]
+    path = skill.path.strip("/")
+    if not path.lower().endswith("skill.md"):
+        path = f"{path}/SKILL.md" if path else "SKILL.md"
+    return f"https://raw.githubusercontent.com/{owner}/{repo}/{skill.ref.strip()}/{path}"
+
+
+def skill_cache_key(skill: SkillSource) -> str:
+    return f"{skill.repo_url}|{skill.ref}|{skill.path}"
+
+
+def build_mcp_toolsets(settings: AgentPluginSettings) -> list[Any]:
+    enabled = [server for server in settings.mcp_servers if server.enabled]
+    if not enabled:
+        return []
+    try:
+        from fastmcp.client.transports import SSETransport, StdioTransport, StreamableHttpTransport
+        from pydantic_ai.mcp import MCPToolset
+    except ModuleNotFoundError:
+        return []
+
+    toolsets: list[Any] = []
+    for server in enabled:
+        try:
+            transport: Any
+            if server.transport == "stdio":
+                if not server.command:
+                    continue
+                transport = StdioTransport(command=server.command[0], args=server.command[1:])
+            elif server.transport == "sse":
+                if not server.url:
+                    continue
+                transport = SSETransport(server.url)
+            else:
+                if not server.url:
+                    continue
+                transport = StreamableHttpTransport(server.url)
+            toolset = MCPToolset(transport, id=mcp_server_id(server), include_instructions=True)
+            if server.tool_allowlist:
+                allowed = {tool.strip() for tool in server.tool_allowlist if tool.strip()}
+
+                def allow_tool(_ctx: Any, tool_def: Any, *, allowed: set[str] = allowed) -> bool:
+                    return str(getattr(tool_def, "name", "")).strip() in allowed
+
+                toolset = toolset.filtered(allow_tool)
+            toolsets.append(toolset.prefixed(mcp_server_id(server)))
+        except Exception:
+            continue
+    return toolsets
+
+
+def mcp_system_prompt(servers: list[MCPServerConfig]) -> str:
+    enabled = [server for server in servers if server.enabled]
+    if not enabled:
+        return ""
+    lines = [
+        "Enabled third-party MCP servers are available as tools. Use them when they match the user's request:",
+    ]
+    for server in enabled:
+        prefix = mcp_server_id(server)
+        lines.append(f"- {server.name}: tool names are prefixed with `{prefix}`.")
+    return "\n".join(lines)
+
+
+def mcp_server_id(server: MCPServerConfig) -> str:
+    raw = server.name.strip() or "mcp"
+    value = re.sub(r"[^a-zA-Z0-9_]+", "_", raw).strip("_").lower()
+    return value or "mcp"
+
+
+def prompt_with_attachments(prompt: str, params: dict[str, Any]) -> str:
+    attachments = params.get("attachments")
+    if not isinstance(attachments, list) or not attachments:
+        return prompt
+    lines = [prompt.rstrip(), "", "User attachments:"]
+    for index, item in enumerate(attachments, start=1):
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or f"attachment-{index}").strip()
+        mime_type = str(item.get("mime_type") or item.get("mimeType") or "").strip()
+        size = str(item.get("size") or "").strip()
+        text = str(item.get("text") or item.get("content") or "").strip()
+        metadata = ", ".join(part for part in [mime_type, f"{size} bytes" if size else ""] if part)
+        lines.append(f"- {name}{f' ({metadata})' if metadata else ''}")
+        if text:
+            lines.append("```")
+            lines.append(text[:20000])
+            lines.append("```")
+    return "\n".join(lines).strip()
+
+
+def summarize_messages(messages: dict[str, Any]) -> str:
+    rows = messages.get("messages") or []
+    if not rows:
+        return "No recent messages."
+    bodies: list[str] = []
+    for item in rows[-10:]:
+        if not isinstance(item, dict):
+            continue
+        sender = item.get("sender_display_name") or item.get("sender_mxid") or "unknown"
+        body = item.get("msg") or item.get("body") or ""
+        if body:
+            bodies.append(f"{sender}: {body}")
+    if not bodies:
+        return "No recent text messages."
+    return "Recent discussion:\n" + "\n".join(bodies)
+
+
+def builtin_mcp_summary() -> dict[str, Any]:
+    return {
+        "name": "Dirextalk Built-in MCP",
+        "transport": "builtin",
+        "enabled": True,
+        "locked": True,
+        "tools": [
+            "contacts.list",
+            "contacts.search",
+            "rooms.search",
+            "messages.list",
+            "messages.send",
+            "room_members.list",
+        ],
+    }
 
 
 def resolve_model_settings(settings: AgentPluginSettings, params: dict[str, Any]) -> ModelSettings:
