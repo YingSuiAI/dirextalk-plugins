@@ -90,9 +90,11 @@ class AgentPluginSettings(BaseModel):
     model_profiles: list[ModelProfileSettings] = Field(default_factory=list)
     dirextalk: DirextalkSettings = Field(default_factory=DirextalkSettings)
     skills: list[SkillSource] = Field(default_factory=list)
+    skills_registry_url: str = "https://skills.sh"
+    mcp_registry_url: str = "https://registry.modelcontextprotocol.io"
     mcp_servers: list[MCPServerConfig] = Field(default_factory=list)
     enabled_tools: list[str] = Field(
-        default_factory=lambda: ["search_rooms", "list_messages", "send_message", "summarize_conversation"]
+        default_factory=lambda: ["search_contacts", "search_rooms", "list_messages", "send_message", "summarize_conversation"]
     )
     extra: dict[str, Any] = Field(default_factory=dict)
 
@@ -118,10 +120,12 @@ def settings_from_environment() -> AgentPluginSettings:
             agent_token_ref=os.getenv("DIREXTALK_AGENT_TOKEN_REF", "env:DIREXTALK_AGENT_TOKEN"),
         ),
         skills=parse_model_list("AGENT_SKILLS_JSON", SkillSource),
+        skills_registry_url=os.getenv("AGENT_SKILLS_REGISTRY_URL", "https://skills.sh"),
+        mcp_registry_url=os.getenv("AGENT_MCP_REGISTRY_URL", "https://registry.modelcontextprotocol.io"),
         mcp_servers=parse_model_list("AGENT_MCP_SERVERS_JSON", MCPServerConfig),
         enabled_tools=env_csv(
             "AGENT_ENABLED_TOOLS",
-            ["search_rooms", "list_messages", "send_message", "summarize_conversation"],
+            ["search_contacts", "search_rooms", "list_messages", "send_message", "summarize_conversation"],
         ),
     )
 

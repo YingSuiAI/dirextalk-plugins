@@ -1,6 +1,6 @@
 services:
   agent-plugin:
-    image: docker.io/dirextalk/agent-plugin@sha256:d7f5d0fdc8878bf173c79968ea9db8ec6a4fb23d872cdcfde664055d2e0baddd
+    image: docker.io/dirextalk/agent-plugin:latest
     restart: unless-stopped
     environment:
       DIREXTALK_BASE_URL: http://message-server:8008

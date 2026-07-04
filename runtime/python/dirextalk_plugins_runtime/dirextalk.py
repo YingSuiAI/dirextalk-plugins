@@ -28,9 +28,12 @@ class DirextalkClient:
     async def search_rooms(self, query: str = "", room_type: str = "all", limit: int = 20) -> dict[str, Any]:
         return await self.action("query", "mcp.rooms.search", {"query": query, "type": room_type, "limit": limit})
 
+    async def list_contacts(self, query: str = "", limit: int = 20) -> dict[str, Any]:
+        action = "mcp.contacts.search" if query.strip() else "mcp.contacts.list"
+        return await self.action("query", action, {"query": query, "limit": limit})
+
     async def list_messages(self, room_id: str, limit: int = 50, from_ts: int = 0, to_ts: int = 0) -> dict[str, Any]:
         return await self.action("query", "mcp.messages.list", {"room_id": room_id, "limit": limit, "from_ts": from_ts, "to_ts": to_ts})
 
     async def send_message(self, room_id: str, msg: str) -> dict[str, Any]:
         return await self.action("command", "mcp.messages.send", {"room_id": room_id, "msg": msg, "agent_gateway": True})
-

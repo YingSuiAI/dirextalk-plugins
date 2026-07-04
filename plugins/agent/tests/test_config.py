@@ -28,12 +28,14 @@ def test_settings_from_environment_accepts_deepseek(monkeypatch) -> None:
     monkeypatch.setenv("AGENT_MODEL", "deepseek-chat")
     monkeypatch.setenv("AGENT_API_KEY_REF", "env:DEEPSEEK_API_KEY")
     monkeypatch.setenv("DIREXTALK_BASE_URL", "http://message-server:8008")
+    monkeypatch.setenv("AGENT_MCP_REGISTRY_URL", "local")
 
     settings = settings_from_environment()
 
     assert settings.model.provider == "deepseek"
     assert settings.model.model == "deepseek-chat"
     assert settings.model.api_key_ref == "env:DEEPSEEK_API_KEY"
+    assert settings.mcp_registry_url == "local"
 
 
 def test_settings_from_environment_accepts_model_profiles(monkeypatch) -> None:

@@ -5,7 +5,8 @@ from typing import Any
 
 from dirextalk_plugins_runtime import AgentPluginSettings, DirextalkClient
 
-from .llm import AgentRuntime, ModelInvocationUnavailable, PydanticAgentRuntime
+from .llm import AgentRuntime, ModelInvocationUnavailable, PydanticAgentRuntime, list_provider_models, secret_value
+from .registry import search_mcp_servers, search_skills
 
 
 class AgentService:
@@ -26,10 +27,42 @@ class AgentService:
                 "model_provider": self.settings.model.provider,
                 "model": self.settings.model.model,
             }
+        if action == "agent.models.list":
+            provider = str(params.get("provider") or self.settings.model.provider).strip()
+            base_url = str(params.get("base_url") or self.settings.model.base_url).strip()
+            api_key = str(params.get("api_key") or "").strip()
+            if not api_key:
+                api_key = secret_value(str(params.get("api_key_ref") or self.settings.model.api_key_ref))
+            return await list_provider_models(provider=provider, base_url=base_url, api_key=api_key)
         if action == "agent.skills.list":
             return {"skills": [skill.model_dump(mode="json") for skill in self.settings.skills]}
+        if action == "agent.skills.registry.search":
+            return await search_skills(
+                registry_url=str(params.get("registry_url") or self.settings.skills_registry_url),
+                query=str(params.get("query") or ""),
+                page=int(params.get("page") or 1),
+                page_size=int(params.get("page_size") or params.get("pageSize") or 20),
+            )
         if action == "agent.mcp.servers.list":
-            return {"servers": [server.model_dump(mode="json") for server in self.settings.mcp_servers]}
+            return {
+                "servers": [
+                    builtin_dirextalk_mcp_server(),
+                    *[server.model_dump(mode="json") for server in self.settings.mcp_servers],
+                ]
+            }
+        if action == "agent.mcp.registry.search":
+            return await search_mcp_servers(
+                registry_url=str(params.get("registry_url") or self.settings.mcp_registry_url),
+                query=str(params.get("query") or ""),
+                limit=int(params.get("limit") or 20),
+            )
+        if action == "agent.config.propose_patch":
+            return propose_config_patch(params)
+        if action in {"agent.contacts.list", "agent.contacts.search"}:
+            return await self.client.list_contacts(
+                query=str(params.get("query") or ""),
+                limit=int(params.get("limit") or 20),
+            )
         if action == "agent.chat":
             prompt = str(params.get("prompt") or params.get("message") or "").strip()
             if not prompt:
@@ -109,3 +142,46 @@ def summarize_messages(messages: dict[str, Any]) -> str:
     if not bodies:
         return "No recent text messages."
     return "Recent discussion:\n" + "\n".join(bodies)
+
+
+def builtin_dirextalk_mcp_server() -> dict[str, Any]:
+    return {
+        "name": "Dirextalk Built-in MCP",
+        "transport": "builtin",
+        "enabled": True,
+        "locked": True,
+        "tools": [
+            "contacts.list",
+            "contacts.search",
+            "rooms.search",
+            "messages.list",
+            "messages.send",
+            "room_members.list",
+            "channel_posts.list",
+            "channel_comments.list",
+            "channel_comments.create",
+        ],
+    }
+
+
+def propose_config_patch(params: dict[str, Any]) -> dict[str, Any]:
+    kind = str(params.get("kind") or "").strip()
+    if kind == "skill":
+        skill = params.get("skill")
+        if not isinstance(skill, dict):
+            raise ValueError("skill must be an object")
+        return {
+            "requires_confirmation": True,
+            "summary": f"Install skill {skill.get('name') or skill.get('path') or skill.get('id')}",
+            "config_patch": {"skills_add": [skill]},
+        }
+    if kind == "mcp_server":
+        server = params.get("mcp_server")
+        if not isinstance(server, dict):
+            raise ValueError("mcp_server must be an object")
+        return {
+            "requires_confirmation": True,
+            "summary": f"Install MCP server {server.get('name') or server.get('url') or server.get('command')}",
+            "config_patch": {"mcp_servers_add": [server]},
+        }
+    raise ValueError("kind must be skill or mcp_server")

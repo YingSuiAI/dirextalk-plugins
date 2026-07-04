@@ -9,8 +9,8 @@
       "min_base_version": "0.1.0",
       "runtime": {
         "type": "docker",
-        "image": "docker.io/dirextalk/agent-plugin",
-        "digest": "sha256:d7f5d0fdc8878bf173c79968ea9db8ec6a4fb23d872cdcfde664055d2e0baddd"
+        "image": "docker.io/dirextalk/agent-plugin:latest",
+        "digest": ""
       },
       "service": {
         "protocol": "http",

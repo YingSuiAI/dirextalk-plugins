@@ -5,8 +5,8 @@ description: Official Dirextalk Agent plugin using Pydantic AI-compatible runtim
 min_base_version: 0.1.0
 runtime:
   type: docker
-  image: docker.io/dirextalk/agent-plugin
-  digest: sha256:d7f5d0fdc8878bf173c79968ea9db8ec6a4fb23d872cdcfde664055d2e0baddd
+  image: docker.io/dirextalk/agent-plugin:latest
+  digest: ""
 service:
   protocol: http
   health: /health
@@ -22,8 +22,19 @@ events:
   - agent.mentioned
 actions:
   - agent.chat
-  - agent.summarize
+  - agent.chat.stream
+  - agent.models.list
+  - agent.skills.list
+  - agent.skills.registry.search
+  - agent.mcp.servers.list
+  - agent.mcp.registry.search
+  - agent.config.propose_patch
+  - agent.contacts.list
+  - agent.contacts.search
+  - agent.rooms.search
+  - agent.messages.list
   - agent.messages.send
+  - agent.summarize
 config_schema:
   provider:
     type: enum
@@ -33,4 +44,8 @@ config_schema:
   api_key_ref:
     type: secret
   base_url:
+    type: string
+  skills_registry_url:
+    type: string
+  mcp_registry_url:
     type: string

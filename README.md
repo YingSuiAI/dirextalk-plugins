@@ -6,7 +6,7 @@ This repository contains the plugin contract, shared Python runtime helpers, the
 
 ## First Plugin
 
-`io.dirextalk.agent` is the official Agent plugin. It runs as a separate container, uses Pydantic AI for model orchestration, and calls Dirextalk through the backend capability actions instead of reading or writing the homeserver database directly.
+`io.dirextalk.agent` is the official Agent plugin. It runs as a separate container, uses Pydantic AI for model orchestration, discovers provider model lists, installs skills from skills.sh-compatible registries, including current `/api/search` fallback responses, installs third-party MCP servers from MCP Registry-compatible metadata, and calls Dirextalk through backend capability actions instead of reading or writing the homeserver database directly.
 
 ## Layout
 
@@ -25,4 +25,3 @@ python3 -m venv .venv
 pip install -e ".[test]"
 pytest
 ```
-
