@@ -56,6 +56,20 @@ class StreamingRuntime:
         yield {"event": "done", "data": {"text": "hello"}}
 
 
+class RecordingRuntime:
+    def __init__(self) -> None:
+        self.prompts: list[str] = []
+        self.params: list[dict] = []
+
+    async def chat(self, prompt: str, params: dict):
+        self.prompts.append(prompt)
+        self.params.append(params)
+        return {"ok": True, "text": "用户偏好中文回答；待办是检查部署。"}
+
+    async def stream_chat(self, prompt: str, params: dict):
+        yield {"event": "done", "data": {"text": prompt}}
+
+
 class FailingRuntime:
     async def chat(self, prompt: str, params: dict):
         raise RuntimeError("tool failed")
@@ -146,6 +160,27 @@ def test_prompt_with_attachments_includes_text_content() -> None:
     assert "hello from file" in prompt
 
 
+def test_prompt_includes_compressed_and_recent_conversation_context() -> None:
+    prompt = prompt_with_attachments(
+        "继续",
+        {
+            "conversation_context": {
+                "summary": "用户偏好中文。",
+                "messages": [
+                    {"role": "user", "text": "上次说到部署"},
+                    {"role": "assistant", "text": "需要检查日志"},
+                ],
+            }
+        },
+    )
+
+    assert "Compressed conversation memory" in prompt
+    assert "用户偏好中文" in prompt
+    assert "user: 上次说到部署" in prompt
+    assert "Current user message" in prompt
+    assert prompt.endswith("继续")
+
+
 def test_mcp_server_id_is_stable_and_safe() -> None:
     server = MCPServerConfig(
         name="Context 7 MCP",
@@ -172,6 +207,34 @@ async def test_agent_service_wraps_dirextalk_tools() -> None:
 
     summary = await service.invoke("agent.summarize", {"room_id": "!room:example.com"})
     assert "Alice: Hello" in summary["summary"]
+
+
+@pytest.mark.asyncio
+async def test_agent_context_compress_uses_runtime_and_returns_summary() -> None:
+    runtime = RecordingRuntime()
+    service = AgentService(settings=AgentPluginSettings(), client=FakeDirextalkClient(), runtime=runtime)
+
+    result = await service.invoke(
+        "agent.context.compress",
+        {
+            "summary": "旧摘要",
+            "messages": [
+                {"role": "user", "text": "我希望中文回答"},
+                {"role": "assistant", "text": "好的"},
+            ],
+            "model_profile": {
+                "provider": "deepseek",
+                "model": "deepseek-chat",
+                "api_key": "client-key",
+            },
+        },
+    )
+
+    assert result["ok"] is True
+    assert result["compressed_message_count"] == 2
+    assert "用户偏好中文" in result["summary"]
+    assert "Existing compressed memory" in runtime.prompts[0]
+    assert runtime.params[0]["model_profile"]["api_key"] == "client-key"
 
 
 @pytest.mark.asyncio

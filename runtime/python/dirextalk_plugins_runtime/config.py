@@ -22,11 +22,13 @@ class ModelProvider(str, Enum):
 class ModelSettings(BaseModel):
     provider: ModelProvider
     model: str
+    api_key: str = ""
     api_key_ref: str = ""
     base_url: str = ""
     temperature: float = 0.2
     max_output_tokens: int = 2048
     context_window: int = 30
+    reasoning_mode: str = ""
 
     @field_validator("model")
     @classmethod
@@ -112,6 +114,7 @@ def settings_from_environment() -> AgentPluginSettings:
             temperature=env_float("AGENT_TEMPERATURE", 0.2),
             max_output_tokens=env_int("AGENT_MAX_OUTPUT_TOKENS", 2048),
             context_window=env_int("AGENT_CONTEXT_WINDOW", 30),
+            reasoning_mode=os.getenv("AGENT_REASONING_MODE", ""),
         ),
         default_model_profile_id=os.getenv("AGENT_DEFAULT_MODEL_PROFILE_ID", ""),
         model_profiles=parse_model_list("AGENT_MODEL_PROFILES_JSON", ModelProfileSettings),

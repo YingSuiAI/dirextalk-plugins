@@ -23,6 +23,7 @@ events:
 actions:
   - agent.chat
   - agent.chat.stream
+  - agent.context.compress
   - agent.models.list
   - agent.skills.list
   - agent.skills.registry.search
@@ -41,8 +42,6 @@ config_schema:
     values: [openai, anthropic, deepseek, gemini, vertex, openai_compatible, openrouter, litellm]
   model:
     type: string
-  api_key_ref:
-    type: secret
   base_url:
     type: string
   skills_registry_url:

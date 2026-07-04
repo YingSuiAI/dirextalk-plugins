@@ -28,11 +28,14 @@ class AgentService:
                 "model": self.settings.model.model,
             }
         if action == "agent.models.list":
-            provider = str(params.get("provider") or self.settings.model.provider).strip()
-            base_url = str(params.get("base_url") or self.settings.model.base_url).strip()
+            profile = params.get("model_profile") if isinstance(params.get("model_profile"), dict) else {}
+            provider = str(params.get("provider") or profile.get("provider") or self.settings.model.provider).strip()
+            base_url = str(params.get("base_url") or profile.get("base_url") or self.settings.model.base_url).strip()
             api_key = str(params.get("api_key") or "").strip()
             if not api_key:
-                api_key = secret_value(str(params.get("api_key_ref") or self.settings.model.api_key_ref))
+                api_key = str(profile.get("api_key") or "").strip()
+            if not api_key:
+                api_key = secret_value(str(params.get("api_key_ref") or profile.get("api_key_ref") or self.settings.model.api_key_ref))
             return await list_provider_models(provider=provider, base_url=base_url, api_key=api_key)
         if action == "agent.skills.list":
             return {"skills": [skill.model_dump(mode="json") for skill in self.settings.skills]}
@@ -108,6 +111,28 @@ class AgentService:
                 raise ValueError("room_id is required")
             messages = await self.client.list_messages(room_id, limit=int(params.get("limit") or 100))
             return {"room_id": room_id, "summary": summarize_messages(messages)}
+        if action == "agent.context.compress":
+            messages = context_messages(params)
+            if not messages:
+                raise ValueError("messages are required")
+            prompt = context_compression_prompt(str(params.get("summary") or ""), messages)
+            try:
+                result = await self.runtime.chat(prompt, params)
+                summary = str(result.get("text") or "").strip()
+            except ModelInvocationUnavailable as exc:
+                return {
+                    "ok": False,
+                    "model_ready": False,
+                    "summary": "",
+                    "error": str(exc),
+                }
+            if not summary:
+                summary = summarize_context_messages(messages)
+            return {
+                "ok": True,
+                "summary": summary,
+                "compressed_message_count": len(messages),
+            }
         raise ValueError(f"unknown agent action {action}")
 
     async def stream(self, action: str, params: dict[str, Any]) -> AsyncIterator[dict[str, Any]]:
@@ -161,6 +186,41 @@ def summarize_messages(messages: dict[str, Any]) -> str:
     if not bodies:
         return "No recent text messages."
     return "Recent discussion:\n" + "\n".join(bodies)
+
+
+def context_messages(params: dict[str, Any]) -> list[dict[str, str]]:
+    raw = params.get("messages")
+    if not isinstance(raw, list):
+        return []
+    messages: list[dict[str, str]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role") or "user").strip() or "user"
+        text = str(item.get("text") or item.get("content") or "").strip()
+        if text:
+            messages.append({"role": role, "text": text})
+    return messages
+
+
+def context_compression_prompt(existing_summary: str, messages: list[dict[str, str]]) -> str:
+    lines = [
+        "Summarize the following chat history into a compact memory for future turns.",
+        "Keep stable facts, user preferences, decisions, unresolved tasks, file references, and tool results.",
+        "Remove greetings and repetition. Use concise bullet points.",
+    ]
+    if existing_summary.strip():
+        lines.extend(["", "Existing compressed memory:", existing_summary.strip()])
+    lines.append("")
+    lines.append("Messages to compress:")
+    for item in messages:
+        lines.append(f"{item['role']}: {item['text'][:4000]}")
+    return "\n".join(lines).strip()
+
+
+def summarize_context_messages(messages: list[dict[str, str]]) -> str:
+    rows = [f"- {item['role']}: {item['text'][:300]}" for item in messages[-12:]]
+    return "Compressed context:\n" + "\n".join(rows)
 
 
 def builtin_dirextalk_mcp_server() -> dict[str, Any]:

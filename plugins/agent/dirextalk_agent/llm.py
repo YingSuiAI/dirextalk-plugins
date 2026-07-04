@@ -94,6 +94,7 @@ class PydanticAgentRuntime:
             pydantic_model_name(model_settings),
             system_prompt=self._system_prompt(),
             toolsets=build_mcp_toolsets(self.settings),
+            model_settings=pydantic_model_settings(model_settings),
         )
 
         if "search_contacts" in self.settings.enabled_tools:
@@ -272,6 +273,10 @@ def mcp_server_id(server: MCPServerConfig) -> str:
 
 
 def prompt_with_attachments(prompt: str, params: dict[str, Any]) -> str:
+    lines = conversation_context_lines(params)
+    if lines:
+        lines.extend(["", "Current user message:", prompt.rstrip()])
+        prompt = "\n".join(lines).strip()
     attachments = params.get("attachments")
     if not isinstance(attachments, list) or not attachments:
         return prompt
@@ -290,6 +295,32 @@ def prompt_with_attachments(prompt: str, params: dict[str, Any]) -> str:
             lines.append(text[:20000])
             lines.append("```")
     return "\n".join(lines).strip()
+
+
+def conversation_context_lines(params: dict[str, Any]) -> list[str]:
+    context = params.get("conversation_context")
+    if not isinstance(context, dict):
+        return []
+    summary = str(context.get("summary") or "").strip()
+    raw_messages = context.get("messages")
+    messages = raw_messages if isinstance(raw_messages, list) else []
+    lines: list[str] = []
+    if summary:
+        lines.extend(["Compressed conversation memory:", summary])
+    recent: list[str] = []
+    for item in messages:
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role") or "user").strip() or "user"
+        text = str(item.get("text") or item.get("content") or "").strip()
+        if text:
+            recent.append(f"{role}: {text[:4000]}")
+    if recent:
+        if lines:
+            lines.append("")
+        lines.append("Recent conversation messages:")
+        lines.extend(recent)
+    return lines
 
 
 def summarize_messages(messages: dict[str, Any]) -> str:
@@ -327,6 +358,9 @@ def builtin_mcp_summary() -> dict[str, Any]:
 
 
 def resolve_model_settings(settings: AgentPluginSettings, params: dict[str, Any]) -> ModelSettings:
+    raw_profile = params.get("model_profile")
+    if isinstance(raw_profile, dict):
+        return ModelSettings.model_validate(raw_profile)
     profile_id = str(params.get("model_profile_id") or settings.default_model_profile_id or "").strip()
     if profile_id:
         for profile in settings.model_profiles:
@@ -353,6 +387,13 @@ def pydantic_model_name(settings: AgentPluginSettings | ModelSettings) -> str:
         ModelProvider.litellm: "openai-chat",
     }
     return f"{prefixes[provider]}:{model}"
+
+
+def pydantic_model_settings(settings: ModelSettings) -> dict[str, Any]:
+    return {
+        "temperature": settings.temperature,
+        "max_tokens": settings.max_output_tokens,
+    }
 
 
 async def list_provider_models(
@@ -415,7 +456,7 @@ def provider_models_base_url(provider: str, base_url: str) -> str:
 
 
 def prepare_provider_environment(settings: ModelSettings) -> None:
-    api_key = secret_value(settings.api_key_ref)
+    api_key = model_api_key(settings)
     provider = settings.provider
     env_name = {
         ModelProvider.openai: "OPENAI_API_KEY",
@@ -438,13 +479,17 @@ def prepare_provider_environment(settings: ModelSettings) -> None:
 
 def ensure_model_ready(settings: ModelSettings) -> None:
     if settings.provider == ModelProvider.vertex:
-        if settings.api_key_ref and not secret_value(settings.api_key_ref):
+        if (settings.api_key or settings.api_key_ref) and not model_api_key(settings):
             raise ModelInvocationUnavailable("model API key reference is configured but empty")
         return
-    if not settings.api_key_ref:
+    if not settings.api_key and not settings.api_key_ref:
         raise ModelInvocationUnavailable("model API key is not configured")
-    if not secret_value(settings.api_key_ref):
+    if not model_api_key(settings):
         raise ModelInvocationUnavailable("model API key reference is configured but empty")
+
+
+def model_api_key(settings: ModelSettings) -> str:
+    return settings.api_key.strip() or secret_value(settings.api_key_ref)
 
 
 def secret_value(ref: str) -> str:

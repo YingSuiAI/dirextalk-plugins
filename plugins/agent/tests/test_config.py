@@ -67,3 +67,19 @@ def test_settings_from_environment_accepts_model_profiles(monkeypatch) -> None:
             api_key_ref="env:AGENT_PROFILE_API_KEY_WORK",
         )
     ]
+
+
+def test_settings_from_environment_accepts_model_tuning(monkeypatch) -> None:
+    monkeypatch.setenv("AGENT_MODEL_PROVIDER", "deepseek")
+    monkeypatch.setenv("AGENT_MODEL", "deepseek-chat")
+    monkeypatch.setenv("AGENT_TEMPERATURE", "0.7")
+    monkeypatch.setenv("AGENT_MAX_OUTPUT_TOKENS", "4096")
+    monkeypatch.setenv("AGENT_CONTEXT_WINDOW", "64")
+    monkeypatch.setenv("AGENT_REASONING_MODE", "deep")
+
+    settings = settings_from_environment()
+
+    assert settings.model.temperature == 0.7
+    assert settings.model.max_output_tokens == 4096
+    assert settings.model.context_window == 64
+    assert settings.model.reasoning_mode == "deep"
