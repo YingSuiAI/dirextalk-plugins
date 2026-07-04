@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from typing import Any
 
 from dirextalk_plugins_runtime import AgentPluginSettings, DirextalkClient
@@ -67,6 +68,31 @@ class AgentService:
             messages = await self.client.list_messages(room_id, limit=int(params.get("limit") or 100))
             return {"room_id": room_id, "summary": summarize_messages(messages)}
         raise ValueError(f"unknown agent action {action}")
+
+    async def stream(self, action: str, params: dict[str, Any]) -> AsyncIterator[dict[str, Any]]:
+        if action not in {"agent.chat", "agent.chat.stream"}:
+            raise ValueError(f"unknown stream action {action}")
+        prompt = str(params.get("prompt") or params.get("message") or "").strip()
+        if not prompt:
+            raise ValueError("prompt is required")
+        try:
+            async for event in self.runtime.stream_chat(prompt, params):
+                name = str(event.get("event") or "message").strip()
+                data = event.get("data")
+                if not isinstance(data, dict):
+                    data = {}
+                yield {"event": name, "data": data}
+        except ModelInvocationUnavailable as exc:
+            yield {
+                "event": "error",
+                "data": {
+                    "ok": False,
+                    "model_ready": False,
+                    "provider": self.settings.model.provider,
+                    "model": self.settings.model.model,
+                    "error": str(exc),
+                },
+            }
 
 
 def summarize_messages(messages: dict[str, Any]) -> str:

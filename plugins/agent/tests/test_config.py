@@ -1,5 +1,5 @@
 from dirextalk_agent.llm import pydantic_model_name
-from dirextalk_plugins_runtime import AgentPluginSettings, MCPServerConfig, ModelSettings, SkillSource, settings_from_environment
+from dirextalk_plugins_runtime import AgentPluginSettings, MCPServerConfig, ModelProfileSettings, ModelSettings, SkillSource, settings_from_environment
 
 
 def test_agent_settings_accept_multiple_model_providers() -> None:
@@ -34,3 +34,34 @@ def test_settings_from_environment_accepts_deepseek(monkeypatch) -> None:
     assert settings.model.provider == "deepseek"
     assert settings.model.model == "deepseek-chat"
     assert settings.model.api_key_ref == "env:DEEPSEEK_API_KEY"
+
+
+def test_settings_from_environment_accepts_model_profiles(monkeypatch) -> None:
+    monkeypatch.setenv(
+        "AGENT_MODEL_PROFILES_JSON",
+        """
+        [
+          {
+            "id": "work",
+            "name": "Work",
+            "provider": "deepseek",
+            "model": "deepseek-chat",
+            "api_key_ref": "env:AGENT_PROFILE_API_KEY_WORK"
+          }
+        ]
+        """,
+    )
+    monkeypatch.setenv("AGENT_DEFAULT_MODEL_PROFILE_ID", "work")
+
+    settings = settings_from_environment()
+
+    assert settings.default_model_profile_id == "work"
+    assert settings.model_profiles == [
+        ModelProfileSettings(
+            id="work",
+            name="Work",
+            provider="deepseek",
+            model="deepseek-chat",
+            api_key_ref="env:AGENT_PROFILE_API_KEY_WORK",
+        )
+    ]

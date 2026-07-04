@@ -27,6 +27,15 @@ class UnavailableRuntime:
         raise ModelInvocationUnavailable("missing API key")
 
 
+class StreamingRuntime:
+    async def chat(self, prompt: str, params: dict):
+        return {"ok": True, "text": prompt, "model_profile_id": params.get("model_profile_id")}
+
+    async def stream_chat(self, prompt: str, params: dict):
+        yield {"event": "delta", "data": {"text": "hel", "model_profile_id": params.get("model_profile_id")}}
+        yield {"event": "done", "data": {"text": "hello"}}
+
+
 @pytest.mark.asyncio
 async def test_agent_service_wraps_dirextalk_tools() -> None:
     service = AgentService(settings=AgentPluginSettings(), client=FakeDirextalkClient())
@@ -50,6 +59,18 @@ async def test_agent_chat_reports_model_configuration_problem() -> None:
     assert result["ok"] is False
     assert result["model_ready"] is False
     assert "missing API key" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_agent_chat_stream_returns_event_shape_and_profile_id() -> None:
+    service = AgentService(settings=AgentPluginSettings(), client=FakeDirextalkClient(), runtime=StreamingRuntime())
+
+    events = [event async for event in service.stream("agent.chat.stream", {"prompt": "hello", "model_profile_id": "work"})]
+
+    assert events == [
+        {"event": "delta", "data": {"text": "hel", "model_profile_id": "work"}},
+        {"event": "done", "data": {"text": "hello"}},
+    ]
 
 
 @pytest.mark.asyncio

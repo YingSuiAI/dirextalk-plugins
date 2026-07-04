@@ -10,7 +10,7 @@
       "runtime": {
         "type": "docker",
         "image": "docker.io/dirextalk/agent-plugin",
-        "digest": "sha256:4acd5a6e76fb8ba07b89adff210d21725a2c0801e087108b57a55d65d73a8e5a"
+        "digest": "sha256:d7f5d0fdc8878bf173c79968ea9db8ec6a4fb23d872cdcfde664055d2e0baddd"
       },
       "service": {
         "protocol": "http",

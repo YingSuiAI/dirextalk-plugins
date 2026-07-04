@@ -37,6 +37,19 @@ class ModelSettings(BaseModel):
         return value
 
 
+class ModelProfileSettings(ModelSettings):
+    id: str
+    name: str = ""
+
+    @field_validator("id")
+    @classmethod
+    def id_required(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("profile id is required")
+        return value
+
+
 class SkillSource(BaseModel):
     repo_url: HttpUrl
     ref: str
@@ -73,10 +86,14 @@ class AgentPluginSettings(BaseModel):
     display_name: str = "Dirextalk Agent"
     system_prompt: str = "You are the local Dirextalk assistant."
     model: ModelSettings = Field(default_factory=lambda: ModelSettings(provider=ModelProvider.openai, model="gpt-4.1"))
+    default_model_profile_id: str = ""
+    model_profiles: list[ModelProfileSettings] = Field(default_factory=list)
     dirextalk: DirextalkSettings = Field(default_factory=DirextalkSettings)
     skills: list[SkillSource] = Field(default_factory=list)
     mcp_servers: list[MCPServerConfig] = Field(default_factory=list)
-    enabled_tools: list[str] = Field(default_factory=lambda: ["search_rooms", "list_messages", "send_message", "summarize_conversation"])
+    enabled_tools: list[str] = Field(
+        default_factory=lambda: ["search_rooms", "list_messages", "send_message", "summarize_conversation"]
+    )
     extra: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -94,6 +111,8 @@ def settings_from_environment() -> AgentPluginSettings:
             max_output_tokens=env_int("AGENT_MAX_OUTPUT_TOKENS", 2048),
             context_window=env_int("AGENT_CONTEXT_WINDOW", 30),
         ),
+        default_model_profile_id=os.getenv("AGENT_DEFAULT_MODEL_PROFILE_ID", ""),
+        model_profiles=parse_model_list("AGENT_MODEL_PROFILES_JSON", ModelProfileSettings),
         dirextalk=DirextalkSettings(
             base_url=os.getenv("DIREXTALK_BASE_URL", "http://message-server:8008"),
             agent_token_ref=os.getenv("DIREXTALK_AGENT_TOKEN_REF", "env:DIREXTALK_AGENT_TOKEN"),
