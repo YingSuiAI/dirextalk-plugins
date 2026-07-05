@@ -21,6 +21,7 @@ actions:
   - ops.logs.tail
   - ops.backups.list
   - ops.backup.create
+  - ops.backup.status
   - ops.backup.download_chunk
   - ops.backup.delete
   - ops.cleanup.plan
@@ -30,3 +31,4 @@ actions:
   - ops.media.orphans.plan
   - ops.migration.export
   - ops.restore.plan
+  - ops.restore.run

@@ -9,9 +9,10 @@ import shutil
 import tarfile
 import tempfile
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 @dataclass(slots=True)
@@ -20,6 +21,8 @@ class OpsSettings:
     max_backups: int = 10
     message_server_container: str = "message-server"
     postgres_container: str = "postgres"
+    postgres_user: str = "dirextalk_message_server"
+    postgres_password: str = "dirextalk_message_server"
     docker_bin: str = "docker"
 
     @classmethod
@@ -29,6 +32,8 @@ class OpsSettings:
             max_backups=int(os.getenv("OPS_MAX_BACKUPS", "10") or "10"),
             message_server_container=os.getenv("OPS_MESSAGE_SERVER_CONTAINER", "message-server"),
             postgres_container=os.getenv("OPS_POSTGRES_CONTAINER", "postgres"),
+            postgres_user=os.getenv("OPS_POSTGRES_USER", "dirextalk_message_server"),
+            postgres_password=os.getenv("OPS_POSTGRES_PASSWORD", "dirextalk_message_server"),
             docker_bin=os.getenv("OPS_DOCKER_BIN", "docker"),
         )
 
@@ -38,21 +43,25 @@ class DockerExecutor:
         self.binary = binary
 
     async def text(self, args: list[str]) -> str:
+        return (await self.bytes(args)).decode(errors="replace")
+
+    async def bytes(self, args: list[str], input_data: bytes | None = None) -> bytes:
         try:
             proc = await asyncio.create_subprocess_exec(
                 self.binary,
                 *args,
+                stdin=asyncio.subprocess.PIPE if input_data is not None else None,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
         except FileNotFoundError:
-            return ""
-        stdout, stderr = await proc.communicate()
+            return b""
+        stdout, stderr = await proc.communicate(input_data)
         if proc.returncode != 0:
             message = stderr.decode(errors="replace").strip()
             if message:
                 raise RuntimeError(message)
-        return stdout.decode(errors="replace")
+        return stdout
 
     async def json_lines(self, args: list[str]) -> list[dict[str, Any]]:
         text = await self.text(args)
@@ -75,6 +84,9 @@ class OpsService:
         self.settings = settings or OpsSettings.from_environment()
         self.executor = executor or DockerExecutor(self.settings.docker_bin)
         self._plans: dict[str, dict[str, Any]] = {}
+        self._backup_jobs: dict[str, dict[str, Any]] = {}
+        self._backup_lock = asyncio.Lock()
+        self._cpu_sample: tuple[int, int] | None = None
 
     async def invoke(self, action: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         params = params or {}
@@ -88,6 +100,8 @@ class OpsService:
             return {"ok": True, "backups": self.backups_list()}
         if action == "ops.backup.create":
             return await self.backup_create(params)
+        if action == "ops.backup.status":
+            return self.backup_status(params)
         if action == "ops.backup.download_chunk":
             return self.backup_download_chunk(params)
         if action == "ops.backup.delete":
@@ -97,7 +111,7 @@ class OpsService:
         if action == "ops.cleanup.run":
             return self.cleanup_run(params)
         if action == "ops.rooms.cleanup.plan":
-            return self.rooms_cleanup_plan(params)
+            return await self.rooms_cleanup_plan(params)
         if action == "ops.rooms.cleanup.run":
             return self.rooms_cleanup_run(params)
         if action == "ops.media.orphans.plan":
@@ -106,6 +120,8 @@ class OpsService:
             return await self.migration_export(params)
         if action == "ops.restore.plan":
             return self.restore_plan(params)
+        if action == "ops.restore.run":
+            return await self.restore_run(params)
         raise ValueError(f"unknown ops action {action}")
 
     async def status_get(self) -> dict[str, Any]:
@@ -139,9 +155,28 @@ class OpsService:
         return {
             "hostname": os.uname().nodename if hasattr(os, "uname") else "",
             "cpu_count": os.cpu_count() or 1,
+            "cpu_usage_percent": self.cpu_usage_percent(load_average),
             "load_average": load_average,
             "time": int(time.time()),
         }
+
+    def cpu_usage_percent(self, load_average: list[float]) -> float:
+        sample = read_cpu_sample()
+        if sample is None:
+            if load_average:
+                return round(min(100.0, load_average[0] / max(1, os.cpu_count() or 1) * 100), 1)
+            return 0.0
+        previous = self._cpu_sample
+        self._cpu_sample = sample
+        if previous is None:
+            if load_average:
+                return round(min(100.0, load_average[0] / max(1, os.cpu_count() or 1) * 100), 1)
+            return 0.0
+        idle_delta = sample[1] - previous[1]
+        total_delta = sample[0] - previous[0]
+        if total_delta <= 0:
+            return 0.0
+        return round(max(0.0, min(100.0, (1 - idle_delta / total_delta) * 100)), 1)
 
     async def containers_list(self) -> list[dict[str, Any]]:
         rows = await self.executor.json_lines(["ps", "-a", "--format", "{{json .}}"])
@@ -161,6 +196,7 @@ class OpsService:
                     "cpu": stat.get("CPUPerc"),
                     "memory": stat.get("MemUsage"),
                     "memory_percent": stat.get("MemPerc"),
+                    "size": row.get("Size"),
                 }
             )
         return containers
@@ -177,25 +213,116 @@ class OpsService:
         if str(params.get("confirm") or "") != "create_backup":
             raise ValueError('confirm="create_backup" is required')
         scope = str(params.get("scope") or "full")
+        if bool(params.get("async")):
+            return {"ok": True, "job": self.start_backup_job(scope)}
+        backup, manifest = await self.create_backup_archive(scope)
+        return {
+            "ok": True,
+            "backup": backup,
+            "manifest": manifest,
+            "job": completed_job("backup_sync", backup),
+        }
+
+    def start_backup_job(self, scope: str) -> dict[str, Any]:
+        job_id = "backup_job_" + uuid.uuid4().hex[:16]
+        job = {
+            "job_id": job_id,
+            "state": "queued",
+            "progress": 0.0,
+            "message": "queued",
+            "scope": scope,
+            "created_at": int(time.time()),
+        }
+        self._backup_jobs[job_id] = job
+        asyncio.create_task(self.run_backup_job(job_id, scope))
+        return dict(job)
+
+    async def run_backup_job(self, job_id: str, scope: str) -> None:
+        def progress(value: float, message: str) -> None:
+            self._backup_jobs[job_id] = {
+                **self._backup_jobs.get(job_id, {}),
+                "state": "running",
+                "progress": round(max(0.0, min(1.0, value)), 3),
+                "message": message,
+                "updated_at": int(time.time()),
+            }
+
+        async with self._backup_lock:
+            try:
+                progress(0.05, "preparing")
+                backup, _ = await self.create_backup_archive(scope, progress=progress)
+                self._backup_jobs[job_id] = {
+                    **self._backup_jobs.get(job_id, {}),
+                    "state": "completed",
+                    "progress": 1.0,
+                    "message": "completed",
+                    "backup": backup,
+                    "completed_at": int(time.time()),
+                }
+            except Exception as exc:  # noqa: BLE001
+                self._backup_jobs[job_id] = {
+                    **self._backup_jobs.get(job_id, {}),
+                    "state": "failed",
+                    "progress": 1.0,
+                    "message": str(exc),
+                    "error": str(exc),
+                    "completed_at": int(time.time()),
+                }
+
+    def backup_status(self, params: dict[str, Any]) -> dict[str, Any]:
+        job_id = str(params.get("job_id") or "").strip()
+        if not job_id:
+            active = sorted(
+                self._backup_jobs.values(),
+                key=lambda item: int(item.get("created_at") or 0),
+                reverse=True,
+            )
+            return {"ok": True, "job": dict(active[0]) if active else None}
+        job = self._backup_jobs.get(job_id)
+        if not job:
+            raise ValueError("backup job not found")
+        return {"ok": True, "job": dict(job)}
+
+    async def create_backup_archive(
+        self,
+        scope: str,
+        progress: Callable[[float, str], None] | None = None,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
         self.settings.backup_root.mkdir(parents=True, exist_ok=True)
-        backup_id = "backup_" + time.strftime("%Y%m%d_%H%M%S")
+        backup_id = "backup_" + time.strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:6]
+        if progress:
+            progress(0.12, "collecting containers")
         manifest = await self.backup_manifest(backup_id, scope)
+        if progress:
+            progress(0.35, "dumping postgres")
+        postgres_dump = await self.postgres_dump()
         path = self.settings.backup_root / f"{backup_id}.tar.gz"
         with tempfile.TemporaryDirectory(prefix="dirextalk-ops-backup-") as tmp:
             tmp_path = Path(tmp)
             (tmp_path / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-            (tmp_path / "postgres.sql").write_text("-- Dirextalk Ops placeholder dump marker\n", encoding="utf-8")
+            (tmp_path / "postgres.sql").write_bytes(postgres_dump)
             (tmp_path / "plugin_state.json").write_text(json.dumps({"plugins": []}, indent=2), encoding="utf-8")
             (tmp_path / "restore.md").write_text(restore_instructions(manifest), encoding="utf-8")
+            if progress:
+                progress(0.78, "writing archive")
             with tarfile.open(path, "w:gz") as tar:
                 for item in sorted(tmp_path.iterdir()):
                     tar.add(item, arcname=item.name)
         self.prune_excess_backups()
-        return {
-            "ok": True,
-            "backup": backup_record(path),
-            "manifest": manifest,
-        }
+        return backup_record(path), manifest
+
+    async def postgres_dump(self) -> bytes:
+        return await self.executor.bytes(
+            [
+                "exec",
+                "-e",
+                f"PGPASSWORD={self.settings.postgres_password}",
+                self.settings.postgres_container,
+                "pg_dumpall",
+                "-U",
+                self.settings.postgres_user,
+            ]
+        )
 
     async def backup_manifest(self, backup_id: str, scope: str) -> dict[str, Any]:
         containers = await self.containers_list()
@@ -243,9 +370,12 @@ class OpsService:
             raise ValueError('confirm="delete_backup" is required')
         backup_id = str(params.get("backup_id") or "")
         path = self.backup_path(backup_id)
+        manifest = safe_read_manifest(path)
+        if manifest is None:
+            manifest = {}
         size = path.stat().st_size
         path.unlink()
-        return {"ok": True, "backup_id": backup_id, "freed_bytes": size}
+        return {"ok": True, "backup_id": backup_id, "freed_bytes": size, "manifest": manifest}
 
     def backups_list(self) -> list[dict[str, Any]]:
         root = self.settings.backup_root
@@ -273,9 +403,18 @@ class OpsService:
             elif target == "backup_old":
                 steps.extend(plan_old_backups(self.backups_list(), self.settings.max_backups))
             elif target == "plugin_stopped":
-                steps.append({"target": target, "action": "preview", "risk": "low", "estimated_bytes": 0})
+                steps.extend(await self.plan_stopped_plugin_containers())
             elif target == "media_cache":
-                steps.append({"target": target, "action": "clear_cache", "risk": "medium", "estimated_bytes": 0})
+                steps.append(
+                    {
+                        "target": target,
+                        "action": "clear_cache",
+                        "risk": "medium",
+                        "estimated_bytes": await self.estimate_container_paths(
+                            ["/var/dirextalk-message-server/media", "/tmp"]
+                        ),
+                    }
+                )
             elif target in {"chat_cache", "chat_hide", "chat_archive"}:
                 steps.append({"target": target, "action": "backend_or_client_controlled", "risk": "medium", "estimated_bytes": 0})
             else:
@@ -325,7 +464,42 @@ class OpsService:
             "freed_bytes": sum(int(item["freed_bytes"]) for item in executed),
         }
 
-    def rooms_cleanup_plan(self, params: dict[str, Any]) -> dict[str, Any]:
+    async def plan_stopped_plugin_containers(self) -> list[dict[str, Any]]:
+        containers = await self.containers_list()
+        steps: list[dict[str, Any]] = []
+        for container in containers:
+            name = str(container.get("name") or "")
+            state = str(container.get("state") or "").lower()
+            if "plugin" not in name or state == "running":
+                continue
+            steps.append(
+                {
+                    "target": "plugin_stopped",
+                    "action": "remove_container",
+                    "risk": "low",
+                    "container": name,
+                    "estimated_bytes": parse_size_text(str(container.get("size") or "")),
+                }
+            )
+        if steps:
+            return steps
+        return [{"target": "plugin_stopped", "action": "preview", "risk": "low", "estimated_bytes": 0}]
+
+    async def estimate_container_paths(self, paths: list[str]) -> int:
+        quoted = " ".join(json.dumps(path) for path in paths)
+        script = f"for p in {quoted}; do [ -e \"$p\" ] && du -sb \"$p\" 2>/dev/null || true; done"
+        try:
+            text = await self.executor.text(["exec", self.settings.message_server_container, "sh", "-c", script])
+        except RuntimeError:
+            return 0
+        total = 0
+        for line in text.splitlines():
+            first = line.strip().split(maxsplit=1)[0] if line.strip() else ""
+            if first.isdigit():
+                total += int(first)
+        return total
+
+    async def rooms_cleanup_plan(self, params: dict[str, Any]) -> dict[str, Any]:
         room_id = str(params.get("room_id") or "").strip()
         if not room_id:
             raise ValueError("room_id is required")
@@ -339,7 +513,7 @@ class OpsService:
                 "before_days": int(params.get("before_days") or 90),
                 "action": room_cleanup_action(target),
                 "risk": "medium" if target in {"chat_hide", "media_cache"} else "low",
-                "estimated_bytes": 0,
+                "estimated_bytes": await self.room_target_estimated_bytes(target),
             }
             for target in accepted
         ]
@@ -352,9 +526,17 @@ class OpsService:
             "rejected_targets": rejected,
             "requires_backup": any(step["risk"] == "medium" for step in steps),
             "risk": cleanup_risk(steps),
+            "estimated_bytes": sum(int(step.get("estimated_bytes") or 0) for step in steps),
         }
         self._plans[plan_id] = plan
         return plan
+
+    async def room_target_estimated_bytes(self, target: str) -> int:
+        if target == "media_cache":
+            return await self.estimate_container_paths(["/var/dirextalk-message-server/media"])
+        if target in {"chat_cache", "chat_archive"}:
+            return await self.estimate_container_paths(["/tmp"])
+        return 0
 
     def rooms_cleanup_run(self, params: dict[str, Any]) -> dict[str, Any]:
         if str(params.get("confirm") or "") != "run_cleanup":
@@ -383,7 +565,10 @@ class OpsService:
         }
 
     async def migration_export(self, params: dict[str, Any]) -> dict[str, Any]:
-        backup = await self.backup_create({"scope": params.get("scope") or "migration", "confirm": "create_backup"})
+        create_params: dict[str, Any] = {"scope": params.get("scope") or "migration", "confirm": "create_backup"}
+        if bool(params.get("async")):
+            create_params["async"] = True
+        backup = await self.backup_create(create_params)
         backup["migration"] = {
             "automatic_restore": False,
             "restore_plan_action": "ops.restore.plan",
@@ -405,6 +590,38 @@ class OpsService:
                 "Start Dirextalk and verify /_p2p/health.",
             ],
             "executes_restore": False,
+            "restore_run_action": "ops.restore.run",
+        }
+
+    async def restore_run(self, params: dict[str, Any]) -> dict[str, Any]:
+        if str(params.get("confirm") or "") != "restore_backup":
+            raise ValueError('confirm="restore_backup" is required')
+        backup_id = str(params.get("backup_id") or "")
+        path = self.backup_path(backup_id)
+        sql = read_member_from_tar(path, "postgres.sql")
+        await self.executor.bytes(
+            [
+                "exec",
+                "-i",
+                "-e",
+                f"PGPASSWORD={self.settings.postgres_password}",
+                self.settings.postgres_container,
+                "psql",
+                "-v",
+                "ON_ERROR_STOP=1",
+                "-U",
+                self.settings.postgres_user,
+                "-d",
+                "postgres",
+            ],
+            input_data=sql,
+        )
+        return {
+            "ok": True,
+            "backup_id": backup_id,
+            "restored": True,
+            "restored_bytes": len(sql),
+            "message": "postgres restore completed",
         }
 
     def backup_path(self, backup_id: str) -> Path:
@@ -447,10 +664,12 @@ def memory_summary() -> dict[str, int]:
         return {}
     total = info.get("MemTotal", 0)
     available = info.get("MemAvailable", 0)
+    used = max(0, total - available)
     return {
         "total_bytes": total,
         "available_bytes": available,
-        "used_bytes": max(0, total - available),
+        "used_bytes": used,
+        "usage_percent": round(used / total * 100, 1) if total else 0,
     }
 
 
@@ -462,6 +681,7 @@ def disk_summary(path: Path) -> dict[str, int | str]:
         "total_bytes": usage.total,
         "used_bytes": usage.used,
         "free_bytes": usage.free,
+        "usage_percent": round(usage.used / usage.total * 100, 1) if usage.total else 0,
     }
 
 
@@ -475,13 +695,71 @@ def container_named(containers: list[dict[str, Any]], name: str) -> dict[str, An
 def backup_record(path: Path) -> dict[str, Any]:
     stat = path.stat()
     backup_id = path.name.removesuffix(".tar.gz")
+    manifest = safe_read_manifest(path) or {}
     return {
         "backup_id": backup_id,
         "path": str(path),
         "size_bytes": stat.st_size,
         "created_at": int(stat.st_mtime),
         "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "scope": manifest.get("scope") or "",
+        "manifest_created_at": manifest.get("created_at") or 0,
     }
+
+
+def completed_job(job_id: str, backup: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "job_id": job_id,
+        "state": "completed",
+        "progress": 1.0,
+        "message": "completed",
+        "backup": backup,
+        "completed_at": int(time.time()),
+    }
+
+
+def read_cpu_sample() -> tuple[int, int] | None:
+    try:
+        first = Path("/proc/stat").read_text(encoding="utf-8").splitlines()[0]
+    except (OSError, IndexError):
+        return None
+    parts = first.split()
+    if not parts or parts[0] != "cpu":
+        return None
+    values = [int(part) for part in parts[1:] if part.isdigit()]
+    if len(values) < 4:
+        return None
+    idle = values[3] + (values[4] if len(values) > 4 else 0)
+    return sum(values), idle
+
+
+def parse_size_text(text: str) -> int:
+    first = text.split("(", 1)[0].strip()
+    if not first:
+        return 0
+    units = {
+        "b": 1,
+        "kb": 1000,
+        "mb": 1000**2,
+        "gb": 1000**3,
+        "tb": 1000**4,
+        "kib": 1024,
+        "mib": 1024**2,
+        "gib": 1024**3,
+        "tib": 1024**4,
+    }
+    number = ""
+    suffix = ""
+    for char in first:
+        if char.isdigit() or char == ".":
+            number += char
+        elif not char.isspace():
+            suffix += char
+    try:
+        value = float(number)
+    except ValueError:
+        return 0
+    return int(value * units.get(suffix.lower(), 1))
 
 
 def plan_temp_files(root: Path, before_days: int) -> list[dict[str, Any]]:
@@ -565,9 +843,20 @@ def restore_instructions(manifest: dict[str, Any]) -> str:
 
 
 def read_manifest_from_tar(path: Path) -> dict[str, Any]:
+    return json.loads(read_member_from_tar(path, "manifest.json").decode("utf-8"))
+
+
+def safe_read_manifest(path: Path) -> dict[str, Any] | None:
+    try:
+        return read_manifest_from_tar(path)
+    except (KeyError, OSError, tarfile.TarError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def read_member_from_tar(path: Path, name: str) -> bytes:
     with tarfile.open(path, "r:gz") as tar:
-        member = tar.getmember("manifest.json")
+        member = tar.getmember(name)
         file = tar.extractfile(member)
         if file is None:
-            raise ValueError("manifest.json missing from backup")
-        return json.loads(file.read().decode("utf-8"))
+            raise ValueError(f"{name} missing from backup")
+        return file.read()

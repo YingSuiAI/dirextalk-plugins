@@ -11,6 +11,8 @@ The message-server starts Ops with these environment variables:
 - `OPS_MAX_BACKUPS`: number of recent backups kept by automatic pruning.
 - `OPS_MESSAGE_SERVER_CONTAINER`: Docker container name used for status and logs.
 - `OPS_POSTGRES_CONTAINER`: Docker container name used for status and backup metadata.
+- `OPS_POSTGRES_USER`: PostgreSQL user used for `pg_dumpall` and restore.
+- `OPS_POSTGRES_PASSWORD`: PostgreSQL password passed to Docker exec through `PGPASSWORD`.
 
 Ops is the only official plugin allowed to mount:
 
@@ -26,6 +28,7 @@ It does not receive owner access token or Agent token.
 - `ops.logs.tail`
 - `ops.backups.list`
 - `ops.backup.create`
+- `ops.backup.status`
 - `ops.backup.download_chunk`
 - `ops.backup.delete`
 - `ops.cleanup.plan`
@@ -35,10 +38,13 @@ It does not receive owner access token or Agent token.
 - `ops.media.orphans.plan`
 - `ops.migration.export`
 - `ops.restore.plan`
+- `ops.restore.run`
 
 ## Safety Rules
 
 All cleanup is plan-first. `ops.cleanup.run` and `ops.rooms.cleanup.run` require an existing plan id plus `confirm="run_cleanup"`. Cleanup execution also requires a recent backup when the plan says `requires_backup=true`.
+
+Backups include a manifest, Postgres dump, plugin state marker, and restore notes. Clients can request async backup creation and poll `ops.backup.status` for progress. Backup export/download uses `ops.backup.download_chunk`; clients assemble chunks locally. `ops.restore.run` restores the Postgres dump from an existing backup package and requires `confirm="restore_backup"`.
 
 First-version chat cleanup does not physically purge Matrix events. `chat_purge_physical` is rejected by room cleanup planning. Room cleanup can plan local cache cleanup, local hiding, archive indexing, and media cache cleanup only.
 
