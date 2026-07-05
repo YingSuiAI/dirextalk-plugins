@@ -2,6 +2,7 @@ import httpx
 import pytest
 
 from dirextalk_agent import llm as llm_module
+from dirextalk_agent import service as service_module
 from dirextalk_agent.llm import (
     ModelInvocationUnavailable,
     PydanticAgentRuntime,
@@ -355,6 +356,85 @@ async def test_agent_lists_skills_and_mcp_servers() -> None:
     assert servers["servers"][0]["name"] == "Dirextalk Built-in MCP"
     assert "contacts.search" in servers["servers"][0]["tools"]
     assert servers["servers"][1]["tool_allowlist"] == ["read_file"]
+
+
+@pytest.mark.asyncio
+async def test_agent_mcp_list_includes_runtime_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_runtime_statuses(_servers):
+        return {
+            "filesystem": {
+                "runtime_status": "ready",
+                "tool_count": 1,
+                "tools": [{"name": "read_file", "description": "Read a file"}],
+            }
+        }
+
+    monkeypatch.setattr(service_module, "mcp_servers_runtime_status", fake_runtime_statuses)
+    settings = AgentPluginSettings(
+        mcp_servers=[
+            MCPServerConfig(
+                name="filesystem",
+                transport="stdio",
+                command=["npx", "server"],
+                enabled=True,
+            )
+        ],
+    )
+    service = AgentService(settings=settings, client=FakeDirextalkClient())
+
+    servers = await service.invoke("agent.mcp.servers.list", {})
+
+    assert servers["servers"][1]["runtime_status"] == "ready"
+    assert servers["servers"][1]["tool_count"] == 1
+    assert servers["servers"][1]["tools"][0]["name"] == "read_file"
+
+
+@pytest.mark.asyncio
+async def test_agent_runtime_inspect_reports_request_model_and_mcp_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_runtime_statuses(_servers):
+        return {
+            "context7": {
+                "runtime_status": "ready",
+                "tool_count": 2,
+                "tools": [{"name": "resolve-library-id"}, {"name": "get-library-docs"}],
+            }
+        }
+
+    monkeypatch.setattr(service_module, "mcp_servers_runtime_status", fake_runtime_statuses)
+    settings = AgentPluginSettings(
+        mcp_servers=[
+            MCPServerConfig(
+                name="Context7",
+                transport="stdio",
+                command=["npx", "-y", "@upstash/context7-mcp@1.0.31"],
+                enabled=True,
+            )
+        ],
+    )
+    service = AgentService(settings=settings, client=FakeDirextalkClient())
+
+    result = await service.invoke(
+        "agent.runtime.inspect",
+        {
+            "model_profile": {
+                "id": "deepseek:deepseek-v4-pro",
+                "provider": "deepseek",
+                "model": "deepseek-v4-pro",
+                "api_key": "sk-client-local",
+                "context_window": 128,
+                "max_output_tokens": 7368,
+                "temperature": 0.2,
+            }
+        },
+    )
+
+    assert result["model"]["provider"] == "deepseek"
+    assert result["model"]["model"] == "deepseek-v4-pro"
+    assert result["model"]["context_window"] == 128
+    assert result["model"]["max_output_tokens"] == 7368
+    assert "api_key" not in result["model"]
+    assert result["mcp_servers"][1]["runtime_status"] == "ready"
+    assert result["mcp_servers"][1]["tool_count"] == 2
 
 
 @pytest.mark.asyncio

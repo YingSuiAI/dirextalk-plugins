@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import asyncio
 from collections.abc import AsyncIterator
 from typing import Any, Protocol
 from urllib.parse import urlparse
@@ -141,12 +142,7 @@ class PydanticAgentRuntime:
 
         @agent.tool_plain
         async def list_mcp_servers() -> dict[str, Any]:
-            return {
-                "servers": [
-                    builtin_mcp_summary(),
-                    *[server.model_dump(mode="json") for server in self.settings.mcp_servers],
-                ]
-            }
+            return {"servers": await mcp_servers_with_runtime_status(self.settings.mcp_servers)}
 
         return agent
 
@@ -336,19 +332,9 @@ def build_mcp_toolsets(settings: AgentPluginSettings) -> list[Any]:
     toolsets: list[Any] = []
     for server in enabled:
         try:
-            transport: Any
-            if server.transport == "stdio":
-                if not server.command:
-                    continue
-                transport = StdioTransport(command=server.command[0], args=server.command[1:])
-            elif server.transport == "sse":
-                if not server.url:
-                    continue
-                transport = SSETransport(server.url)
-            else:
-                if not server.url:
-                    continue
-                transport = StreamableHttpTransport(server.url)
+            transport = mcp_transport_for_server(server, StdioTransport, SSETransport, StreamableHttpTransport)
+            if transport is None:
+                continue
             toolset = MCPToolset(transport, id=mcp_server_id(server), include_instructions=True)
             if server.tool_allowlist:
                 allowed = {tool.strip() for tool in server.tool_allowlist if tool.strip()}
@@ -361,6 +347,75 @@ def build_mcp_toolsets(settings: AgentPluginSettings) -> list[Any]:
         except Exception:
             continue
     return toolsets
+
+
+def mcp_transport_for_server(
+    server: MCPServerConfig,
+    stdio_transport: Any,
+    sse_transport: Any,
+    streamable_http_transport: Any,
+) -> Any | None:
+    if server.transport == "stdio":
+        if not server.command:
+            return None
+        return stdio_transport(command=server.command[0], args=server.command[1:])
+    if server.transport == "sse":
+        if not server.url:
+            return None
+        return sse_transport(server.url)
+    if not server.url:
+        return None
+    return streamable_http_transport(server.url)
+
+
+async def mcp_servers_with_runtime_status(servers: list[MCPServerConfig]) -> list[dict[str, Any]]:
+    statuses = await mcp_servers_runtime_status(servers)
+    result = [builtin_mcp_summary()]
+    for server in servers:
+        summary = server.model_dump(mode="json")
+        summary.update(statuses.get(mcp_server_id(server), {}))
+        result.append(summary)
+    return result
+
+
+async def mcp_servers_runtime_status(servers: list[MCPServerConfig]) -> dict[str, dict[str, Any]]:
+    return {mcp_server_id(server): await mcp_server_runtime_status(server) for server in servers}
+
+
+async def mcp_server_runtime_status(server: MCPServerConfig) -> dict[str, Any]:
+    if not server.enabled:
+        return {"runtime_status": "disabled", "tool_count": 0, "tools": []}
+    try:
+        from fastmcp import Client
+        from fastmcp.client.transports import SSETransport, StdioTransport, StreamableHttpTransport
+
+        transport = mcp_transport_for_server(server, StdioTransport, SSETransport, StreamableHttpTransport)
+        if transport is None:
+            return {"runtime_status": "invalid", "tool_count": 0, "tools": [], "error": "missing MCP transport target"}
+
+        async def list_tools() -> list[Any]:
+            async with Client(transport) as client:
+                return await client.list_tools()
+
+        timeout = max(1.0, min(float(server.timeout_ms or 30000) / 1000.0, 20.0))
+        tools = await asyncio.wait_for(list_tools(), timeout=timeout)
+        normalized_tools = [
+            {
+                "name": str(getattr(tool, "name", "")).strip(),
+                "description": str(getattr(tool, "description", "") or "").strip(),
+            }
+            for tool in tools
+        ]
+        normalized_tools = [tool for tool in normalized_tools if tool["name"]]
+        return {
+            "runtime_status": "ready",
+            "tool_count": len(normalized_tools),
+            "tools": normalized_tools,
+        }
+    except ModuleNotFoundError as exc:
+        return {"runtime_status": "unavailable", "tool_count": 0, "tools": [], "error": str(exc)}
+    except Exception as exc:  # noqa: BLE001
+        return {"runtime_status": "error", "tool_count": 0, "tools": [], "error": str(exc)}
 
 
 def mcp_system_prompt(servers: list[MCPServerConfig]) -> str:
@@ -564,9 +619,41 @@ async def list_provider_models(
                 "name": str(item.get("display_name") or item.get("name") or model_id).strip(),
                 "provider": provider,
                 **({"owned_by": item["owned_by"]} if item.get("owned_by") else {}),
+                **model_metadata(item),
             }
         )
     return {"provider": provider, "base_url": base, "models": models}
+
+
+def model_metadata(item: dict[str, Any]) -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
+    for target, aliases in {
+        "context_length": [
+            "context_length",
+            "context_window",
+            "max_context_tokens",
+            "max_input_tokens",
+            "input_token_limit",
+        ],
+        "max_output_tokens": [
+            "max_output_tokens",
+            "max_tokens",
+            "max_completion_tokens",
+            "output_token_limit",
+        ],
+    }.items():
+        for alias in aliases:
+            value = item.get(alias)
+            if isinstance(value, int) and value > 0:
+                metadata[target] = value
+                break
+            if isinstance(value, float) and value > 0:
+                metadata[target] = int(value)
+                break
+            if isinstance(value, str) and value.strip().isdigit():
+                metadata[target] = int(value.strip())
+                break
+    return metadata
 
 
 def provider_models_base_url(provider: str, base_url: str) -> str:

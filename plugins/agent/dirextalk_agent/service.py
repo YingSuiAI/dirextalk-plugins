@@ -7,7 +7,16 @@ from typing import Any
 from dirextalk_plugins_runtime import AgentPluginSettings, DirextalkClient
 
 from .knowledge import EmbeddingClient, KnowledgeStore, openai_compatible_embeddings
-from .llm import AgentRuntime, ModelInvocationUnavailable, PydanticAgentRuntime, list_provider_models, secret_value
+from .llm import (
+    AgentRuntime,
+    ModelInvocationUnavailable,
+    PydanticAgentRuntime,
+    list_provider_models,
+    mcp_servers_runtime_status,
+    mcp_server_id,
+    resolve_model_settings,
+    secret_value,
+)
 from .registry import search_mcp_servers, search_skills
 
 
@@ -35,6 +44,12 @@ class AgentService:
                 "model_provider": self.settings.model.provider,
                 "model": self.settings.model.model,
             }
+        if action == "agent.runtime.inspect":
+            model_settings = resolve_model_settings(self.settings, params)
+            return {
+                "model": safe_model_settings(model_settings),
+                "mcp_servers": await configured_mcp_servers_with_runtime_status(self.settings.mcp_servers),
+            }
         if action == "agent.models.list":
             profile = params.get("model_profile") if isinstance(params.get("model_profile"), dict) else {}
             provider = str(params.get("provider") or profile.get("provider") or self.settings.model.provider).strip()
@@ -55,12 +70,7 @@ class AgentService:
                 page_size=int(params.get("page_size") or params.get("pageSize") or 20),
             )
         if action == "agent.mcp.servers.list":
-            return {
-                "servers": [
-                    builtin_dirextalk_mcp_server(),
-                    *[server.model_dump(mode="json") for server in self.settings.mcp_servers],
-                ]
-            }
+            return {"servers": await configured_mcp_servers_with_runtime_status(self.settings.mcp_servers)}
         if action == "agent.mcp.registry.search":
             return await search_mcp_servers(
                 registry_url=str(params.get("registry_url") or self.settings.mcp_registry_url),
@@ -327,6 +337,23 @@ def builtin_dirextalk_mcp_server() -> dict[str, Any]:
             "channel_comments.create",
         ],
     }
+
+
+def safe_model_settings(model_settings: Any) -> dict[str, Any]:
+    data = model_settings.model_dump(mode="json")
+    data.pop("api_key", None)
+    data.pop("api_key_ref", None)
+    return data
+
+
+async def configured_mcp_servers_with_runtime_status(servers: list[Any]) -> list[dict[str, Any]]:
+    statuses = await mcp_servers_runtime_status(servers)
+    result = [builtin_dirextalk_mcp_server()]
+    for server in servers:
+        summary = server.model_dump(mode="json")
+        summary.update(statuses.get(mcp_server_id(server), {}))
+        result.append(summary)
+    return result
 
 
 def propose_config_patch(params: dict[str, Any]) -> dict[str, Any]:

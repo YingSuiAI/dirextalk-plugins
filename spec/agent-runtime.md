@@ -22,7 +22,9 @@ The first version supports these provider identifiers:
 - `openrouter`
 - `litellm`
 
-`agent.models.list` discovers provider models from the configured provider API address and API key. OpenAI-compatible providers use `/models`; provider-specific headers are handled by the Agent runtime.
+`agent.models.list` discovers provider models from the configured provider API address and API key. OpenAI-compatible providers use `/models`; provider-specific headers are handled by the Agent runtime. When providers return model metadata, the response preserves normalized `context_length` and `max_output_tokens` so clients can seed model defaults without hard-coded tiny limits.
+
+`agent.runtime.inspect` resolves request-scoped model settings and reports configured MCP server runtime status without returning API keys. Clients can use it to verify the selected `model_profile` parameters and whether third-party MCP servers can actually start.
 
 ## Skills
 
@@ -32,7 +34,7 @@ Skills may be installed from GitHub by pinning `repo_url`, `ref`, and `path`. `a
 
 External MCP server configs support `stdio`, `streamable_http`, and `sse` transports. Each server has its own enabled flag, timeout, and tool allowlist.
 
-`agent.mcp.servers.list` always includes the locked Dirextalk built-in MCP adapter first. It exposes backend capability tools such as contact search, room search, message list/send, member list, and channel post/comment access by calling fixed `mcp.*` body actions with the Agent token.
+`agent.mcp.servers.list` always includes the locked Dirextalk built-in MCP adapter first. It exposes backend capability tools such as contact search, room search, message list/send, member list, and channel post/comment access by calling fixed `mcp.*` body actions with the Agent token. Third-party entries include `runtime_status`, `tool_count`, `tools`, and an `error` field when startup or tool listing fails.
 
 `agent.mcp.registry.search` defaults to the official/compatible MCP Registry API at `https://registry.modelcontextprotocol.io`. Registry package entries are converted to Agent container launch configs:
 

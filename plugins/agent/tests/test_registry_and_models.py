@@ -15,8 +15,8 @@ async def test_list_provider_models_uses_openai_compatible_models_endpoint() -> 
             200,
             json={
                 "data": [
-                    {"id": "deepseek-chat", "owned_by": "deepseek"},
-                    {"id": "deepseek-reasoner"},
+                    {"id": "deepseek-chat", "owned_by": "deepseek", "context_length": 64000},
+                    {"id": "deepseek-reasoner", "max_output_tokens": 8192},
                 ]
             },
         )
@@ -31,8 +31,19 @@ async def test_list_provider_models_uses_openai_compatible_models_endpoint() -> 
     )
 
     assert result["models"] == [
-        {"id": "deepseek-chat", "name": "deepseek-chat", "provider": "deepseek", "owned_by": "deepseek"},
-        {"id": "deepseek-reasoner", "name": "deepseek-reasoner", "provider": "deepseek"},
+        {
+            "id": "deepseek-chat",
+            "name": "deepseek-chat",
+            "provider": "deepseek",
+            "owned_by": "deepseek",
+            "context_length": 64000,
+        },
+        {
+            "id": "deepseek-reasoner",
+            "name": "deepseek-reasoner",
+            "provider": "deepseek",
+            "max_output_tokens": 8192,
+        },
     ]
 
 
