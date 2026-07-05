@@ -24,8 +24,8 @@ test = [
 ]
 
 [tool.setuptools.packages.find]
-where = ["runtime/python", "plugins/agent"]
+where = ["runtime/python", "plugins/agent", "plugins/ops"]
 
 [tool.pytest.ini_options]
-testpaths = ["plugins/agent/tests"]
+testpaths = ["plugins/agent/tests", "plugins/ops/tests"]
 asyncio_mode = "auto"

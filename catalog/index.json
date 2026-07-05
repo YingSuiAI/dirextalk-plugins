@@ -26,6 +26,30 @@
         "knowledge.read",
         "knowledge.write"
       ]
+    },
+    {
+      "id": "io.dirextalk.ops",
+      "name": "Dirextalk Ops",
+      "version": "0.1.0",
+      "description": "Official Dirextalk operations plugin for status, backup, migration export, and safe cleanup planning.",
+      "min_base_version": "0.1.0",
+      "runtime": {
+        "type": "docker",
+        "image": "docker.io/dirextalk/ops-plugin:latest",
+        "digest": ""
+      },
+      "service": {
+        "protocol": "http",
+        "health": "/health",
+        "invoke": "/invoke"
+      },
+      "permissions": [
+        "ops.status.read",
+        "ops.backup.write",
+        "ops.cleanup.plan",
+        "ops.cleanup.run",
+        "ops.migration.export"
+      ]
     }
   ]
 }
