@@ -181,14 +181,38 @@ def skills_system_prompt(skills: list[SkillSource], cache: dict[str, str] | None
 
 
 def fetch_skill_instruction(skill: SkillSource) -> str:
-    raw_url = github_skill_raw_url(skill)
-    if not raw_url:
+    raw_urls = github_skill_raw_url_candidates(skill)
+    if not raw_urls:
         return "Skill source is configured, but this version can only auto-load public GitHub skill repositories."
+    seen: set[str] = set()
+    last_error: Exception | None = None
+    for raw_url in raw_urls:
+        if raw_url in seen:
+            continue
+        seen.add(raw_url)
+        try:
+            return fetch_skill_raw_text(raw_url)
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+
+    discovered_url = discover_github_skill_raw_url(skill)
+    if discovered_url and discovered_url not in seen:
+        try:
+            return fetch_skill_raw_text(discovered_url)
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+
+    if last_error is None:
+        return "Skill source is configured but no SKILL.md file could be found."
+    return f"Skill source is configured but could not be loaded: {last_error}"
+
+
+def fetch_skill_raw_text(raw_url: str) -> str:
     try:
         response = httpx.get(raw_url, timeout=8.0, follow_redirects=True)
         response.raise_for_status()
     except Exception as exc:
-        return f"Skill source is configured but could not be loaded: {exc}"
+        raise exc
     text = response.text.strip()
     if not text:
         return "Skill source loaded but SKILL.md was empty."
@@ -196,6 +220,45 @@ def fetch_skill_instruction(skill: SkillSource) -> str:
 
 
 def github_skill_raw_url(skill: SkillSource) -> str:
+    candidates = github_skill_raw_url_candidates(skill)
+    return candidates[0] if candidates else ""
+
+
+def github_skill_raw_url_candidates(skill: SkillSource) -> list[str]:
+    parsed = urlparse(str(skill.repo_url))
+    if parsed.netloc.lower() != "github.com":
+        return []
+    parts = [part for part in parsed.path.strip("/").split("/") if part]
+    if len(parts) < 2:
+        return []
+    owner, repo = parts[0], parts[1]
+    path = skill.path.strip("/")
+    candidate_paths: list[str]
+    if not path:
+        candidate_paths = ["SKILL.md"]
+    elif path.lower().endswith("skill.md"):
+        candidate_paths = [path]
+    else:
+        candidate_paths = [
+            f"{path}/SKILL.md",
+            f"skills/{path}/SKILL.md",
+            f".claude/skills/{path}/SKILL.md",
+            f".codex/skills/{path}/SKILL.md",
+            f"{path}/skill/SKILL.md",
+        ]
+    ref = skill.ref.strip()
+    urls: list[str] = []
+    seen_paths: set[str] = set()
+    for candidate_path in candidate_paths:
+        candidate_path = candidate_path.strip("/")
+        if not candidate_path or candidate_path in seen_paths:
+            continue
+        seen_paths.add(candidate_path)
+        urls.append(f"https://raw.githubusercontent.com/{owner}/{repo}/{ref}/{candidate_path}")
+    return urls
+
+
+def discover_github_skill_raw_url(skill: SkillSource) -> str:
     parsed = urlparse(str(skill.repo_url))
     if parsed.netloc.lower() != "github.com":
         return ""
@@ -203,10 +266,57 @@ def github_skill_raw_url(skill: SkillSource) -> str:
     if len(parts) < 2:
         return ""
     owner, repo = parts[0], parts[1]
-    path = skill.path.strip("/")
-    if not path.lower().endswith("skill.md"):
-        path = f"{path}/SKILL.md" if path else "SKILL.md"
-    return f"https://raw.githubusercontent.com/{owner}/{repo}/{skill.ref.strip()}/{path}"
+    tree_url = f"https://api.github.com/repos/{owner}/{repo}/git/trees/{skill.ref.strip()}?recursive=1"
+    response = httpx.get(tree_url, timeout=8.0, follow_redirects=True)
+    response.raise_for_status()
+    data = response.json()
+    if not isinstance(data, dict):
+        return ""
+    raw_tree = data.get("tree")
+    if not isinstance(raw_tree, list):
+        return ""
+    skill_paths = [
+        str(item.get("path") or "").strip()
+        for item in raw_tree
+        if isinstance(item, dict)
+        and str(item.get("type") or "") == "blob"
+        and str(item.get("path") or "").lower().endswith("skill.md")
+    ]
+    if not skill_paths:
+        return ""
+    selected = select_skill_path(skill.path, skill_paths)
+    if not selected:
+        return ""
+    return f"https://raw.githubusercontent.com/{owner}/{repo}/{skill.ref.strip()}/{selected}"
+
+
+def select_skill_path(configured_path: str, skill_paths: list[str]) -> str:
+    if len(skill_paths) == 1:
+        return skill_paths[0]
+    target = configured_path.strip().strip("/")
+    if target.lower().endswith("skill.md"):
+        target = target.rsplit("/", 1)[0] if "/" in target else ""
+    target_token = skill_path_token(target.rsplit("/", 1)[-1] if target else "")
+    if not target_token:
+        return ""
+    best_path = ""
+    best_score = 0
+    for path in skill_paths:
+        parts = [part for part in path.strip("/").split("/") if part]
+        path_tokens = {skill_path_token(part) for part in parts if part.lower() != "skill.md"}
+        score = 0
+        if target_token in path_tokens:
+            score = 100
+        elif any(target_token in token or token in target_token for token in path_tokens if token):
+            score = 50
+        if score > best_score:
+            best_score = score
+            best_path = path
+    return best_path if best_score > 0 else ""
+
+
+def skill_path_token(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", value.lower())
 
 
 def skill_cache_key(skill: SkillSource) -> str:

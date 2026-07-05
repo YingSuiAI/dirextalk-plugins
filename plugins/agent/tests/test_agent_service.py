@@ -1,9 +1,11 @@
+import httpx
 import pytest
 
 from dirextalk_agent import llm as llm_module
 from dirextalk_agent.llm import (
     ModelInvocationUnavailable,
     PydanticAgentRuntime,
+    fetch_skill_instruction,
     mcp_server_id,
     prompt_with_attachments,
     skills_system_prompt,
@@ -126,6 +128,59 @@ def test_disabled_skills_are_not_loaded_into_system_prompt(monkeypatch: pytest.M
     )
 
     assert skills_system_prompt([skill], {}) == ""
+
+
+def test_fetch_skill_instruction_tries_common_skills_directory(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen_urls: list[str] = []
+
+    def fake_get(url: str, **_: object) -> httpx.Response:
+        seen_urls.append(url)
+        request = httpx.Request("GET", url)
+        if url.endswith("/skills/brainstorming/SKILL.md"):
+            return httpx.Response(200, request=request, text="Use divergent thinking first.")
+        return httpx.Response(404, request=request, text="not found")
+
+    monkeypatch.setattr(llm_module.httpx, "get", fake_get)
+    skill = SkillSource(
+        repo_url="https://github.com/obra/superpowers",
+        ref="main",
+        path="brainstorming",
+        enabled=True,
+    )
+
+    assert fetch_skill_instruction(skill) == "Use divergent thinking first."
+    assert seen_urls[:2] == [
+        "https://raw.githubusercontent.com/obra/superpowers/main/brainstorming/SKILL.md",
+        "https://raw.githubusercontent.com/obra/superpowers/main/skills/brainstorming/SKILL.md",
+    ]
+
+
+def test_fetch_skill_instruction_discovers_single_repo_skill_file(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen_urls: list[str] = []
+
+    def fake_get(url: str, **_: object) -> httpx.Response:
+        seen_urls.append(url)
+        request = httpx.Request("GET", url)
+        if url == "https://api.github.com/repos/panniantong/agent-reach/git/trees/main?recursive=1":
+            return httpx.Response(
+                200,
+                request=request,
+                json={"tree": [{"path": "agent_reach/skill/SKILL.md", "type": "blob"}]},
+            )
+        if url.endswith("/agent_reach/skill/SKILL.md"):
+            return httpx.Response(200, request=request, text="Reach external resources when asked.")
+        return httpx.Response(404, request=request, text="not found")
+
+    monkeypatch.setattr(llm_module.httpx, "get", fake_get)
+    skill = SkillSource(
+        repo_url="https://github.com/panniantong/agent-reach",
+        ref="main",
+        path="agent-reach",
+        enabled=True,
+    )
+
+    assert fetch_skill_instruction(skill) == "Reach external resources when asked."
+    assert "https://api.github.com/repos/panniantong/agent-reach/git/trees/main?recursive=1" in seen_urls
 
 
 def test_runtime_registers_builtin_config_tools_and_summarize_tool(monkeypatch: pytest.MonkeyPatch) -> None:
