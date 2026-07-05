@@ -357,15 +357,28 @@ def builtin_mcp_summary() -> dict[str, Any]:
     }
 
 
+def _request_api_key(params: dict[str, Any]) -> str:
+    return str(params.get("api_key") or "").strip()
+
+
 def resolve_model_settings(settings: AgentPluginSettings, params: dict[str, Any]) -> ModelSettings:
     raw_profile = params.get("model_profile")
     if isinstance(raw_profile, dict):
-        return ModelSettings.model_validate(raw_profile)
+        profile = dict(raw_profile)
+        if not str(profile.get("api_key") or "").strip():
+            api_key = _request_api_key(params)
+            if api_key:
+                profile["api_key"] = api_key
+        return ModelSettings.model_validate(profile)
     profile_id = str(params.get("model_profile_id") or settings.default_model_profile_id or "").strip()
     if profile_id:
         for profile in settings.model_profiles:
             if profile.id == profile_id:
-                return ModelSettings.model_validate(profile.model_dump())
+                profile_data = profile.model_dump()
+                api_key = _request_api_key(params)
+                if api_key and not str(profile_data.get("api_key") or "").strip():
+                    profile_data["api_key"] = api_key
+                return ModelSettings.model_validate(profile_data)
         raise ModelInvocationUnavailable(f"unknown model profile {profile_id}")
     return settings.model
 

@@ -58,6 +58,30 @@ def test_resolve_model_settings_accepts_request_profile_api_key() -> None:
     ensure_model_ready(model)
 
 
+def test_resolve_model_settings_uses_request_api_key_for_profile_fallback() -> None:
+    settings = AgentPluginSettings(
+        model=ModelSettings(provider="openai", model="gpt-4.1"),
+    )
+
+    model = resolve_model_settings(
+        settings,
+        {
+            "api_key": "sk-client-local",
+            "model_profile": {
+                "id": "deepseek:deepseek-chat",
+                "provider": "deepseek",
+                "model": "deepseek-chat",
+                "temperature": 0.4,
+            },
+        },
+    )
+
+    assert model.provider == "deepseek"
+    assert model.model == "deepseek-chat"
+    assert model.api_key == "sk-client-local"
+    ensure_model_ready(model)
+
+
 def test_create_agent_passes_temperature_and_token_settings() -> None:
     captured: dict[str, object] = {}
 
