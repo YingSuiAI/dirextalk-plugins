@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import os
 from collections.abc import AsyncIterator
 from typing import Any
 
 from dirextalk_plugins_runtime import AgentPluginSettings, DirextalkClient
 
+from .knowledge import EmbeddingClient, KnowledgeStore, openai_compatible_embeddings
 from .llm import AgentRuntime, ModelInvocationUnavailable, PydanticAgentRuntime, list_provider_models, secret_value
 from .registry import search_mcp_servers, search_skills
 
@@ -15,10 +17,16 @@ class AgentService:
         settings: AgentPluginSettings,
         client: DirextalkClient,
         runtime: AgentRuntime | None = None,
+        knowledge_store: KnowledgeStore | None = None,
+        embedding_client: EmbeddingClient | None = None,
     ) -> None:
         self.settings = settings
         self.client = client
         self.runtime = runtime or PydanticAgentRuntime(settings=settings, client=client)
+        self.knowledge_store = knowledge_store or KnowledgeStore(
+            os.getenv("AGENT_KNOWLEDGE_DIR", "/var/lib/dirextalk-agent/knowledge")
+        )
+        self.embedding_client = embedding_client or openai_compatible_embeddings
 
     async def invoke(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
         if action == "agent.tools.list":
@@ -61,6 +69,8 @@ class AgentService:
             )
         if action == "agent.config.propose_patch":
             return propose_config_patch(params)
+        if action.startswith("agent.knowledge."):
+            return await self._invoke_knowledge(action, params)
         if action in {"agent.contacts.list", "agent.contacts.search"}:
             return await self.client.list_contacts(
                 query=str(params.get("query") or ""),
@@ -71,7 +81,11 @@ class AgentService:
             if not prompt:
                 raise ValueError("prompt is required")
             try:
-                return await self.runtime.chat(prompt, params)
+                prompt, knowledge_sources = await self._prompt_with_knowledge(prompt, params)
+                result = await self.runtime.chat(prompt, params)
+                if knowledge_sources:
+                    result["knowledge_sources"] = knowledge_sources
+                return result
             except ModelInvocationUnavailable as exc:
                 return {
                     "ok": False,
@@ -142,11 +156,14 @@ class AgentService:
         if not prompt:
             raise ValueError("prompt is required")
         try:
+            prompt, knowledge_sources = await self._prompt_with_knowledge(prompt, params)
             async for event in self.runtime.stream_chat(prompt, params):
                 name = str(event.get("event") or "message").strip()
                 data = event.get("data")
                 if not isinstance(data, dict):
                     data = {}
+                if name == "done" and knowledge_sources:
+                    data = {**data, "knowledge_sources": knowledge_sources}
                 yield {"event": name, "data": data}
         except ModelInvocationUnavailable as exc:
             yield {
@@ -170,6 +187,67 @@ class AgentService:
                     "error": str(exc),
                 },
             }
+
+    async def _invoke_knowledge(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
+        if action == "agent.knowledge.config.get":
+            return self.knowledge_store.config_get()
+        if action == "agent.knowledge.config.update":
+            return self.knowledge_store.config_update(params)
+        if action == "agent.knowledge.sources.list":
+            return self.knowledge_store.sources_list()
+        if action == "agent.knowledge.sources.delete":
+            return self.knowledge_store.source_delete(str(params.get("source_id") or ""))
+        if action == "agent.knowledge.upload.start":
+            return self.knowledge_store.upload_start(params)
+        if action == "agent.knowledge.upload.chunk":
+            return self.knowledge_store.upload_chunk(params)
+        if action == "agent.knowledge.upload.finish":
+            return await self.knowledge_store.upload_finish(params, embedding_client=self.embedding_client)
+        if action == "agent.knowledge.memory.create":
+            return await self.knowledge_store.memory_create(params, embedding_client=self.embedding_client)
+        if action == "agent.knowledge.search":
+            return await self.knowledge_store.search(params, embedding_client=self.embedding_client)
+        if action == "agent.knowledge.status":
+            return self.knowledge_store.status()
+        raise ValueError(f"unknown agent action {action}")
+
+    async def _prompt_with_knowledge(self, prompt: str, params: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
+        if not truthy(params.get("knowledge_enabled")):
+            self.knowledge_store.release_idle_cache()
+            return prompt, []
+        search_params = {
+            "query": prompt,
+            "embedding_profile": params.get("embedding_profile"),
+            "source_ids": params.get("knowledge_source_ids") or params.get("source_ids") or [],
+            "top_k": params.get("knowledge_top_k") or params.get("top_k") or 5,
+        }
+        search_result = await self.knowledge_store.search(search_params, embedding_client=self.embedding_client)
+        sources = search_result.get("results") if isinstance(search_result, dict) else []
+        if not isinstance(sources, list) or not sources:
+            return prompt, []
+        lines = ["Knowledge Context:"]
+        knowledge_sources: list[dict[str, Any]] = []
+        for index, source in enumerate(sources[:8], start=1):
+            if not isinstance(source, dict):
+                continue
+            title = str(source.get("title") or source.get("source_title") or "Knowledge")
+            text = str(source.get("text") or source.get("summary") or "").strip()
+            if not text:
+                continue
+            lines.append(f"[{index}] {title}: {text[:1200]}")
+            knowledge_sources.append(
+                {
+                    "source_id": source.get("source_id"),
+                    "chunk_id": source.get("chunk_id"),
+                    "title": title,
+                    "summary": str(source.get("summary") or text[:240]),
+                    "score": source.get("score"),
+                }
+            )
+        if not knowledge_sources:
+            return prompt, []
+        lines.extend(["", "User Request:", prompt])
+        return "\n".join(lines).strip(), knowledge_sources
 
 
 def summarize_messages(messages: dict[str, Any]) -> str:
@@ -221,6 +299,14 @@ def context_compression_prompt(existing_summary: str, messages: list[dict[str, s
 def summarize_context_messages(messages: list[dict[str, str]]) -> str:
     rows = [f"- {item['role']}: {item['text'][:300]}" for item in messages[-12:]]
     return "Compressed context:\n" + "\n".join(rows)
+
+
+def truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on", "enabled"}
+    return bool(value)
 
 
 def builtin_dirextalk_mcp_server() -> dict[str, Any]:

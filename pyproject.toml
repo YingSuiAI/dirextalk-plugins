@@ -10,6 +10,8 @@ requires-python = ">=3.12"
 dependencies = [
   "fastapi>=0.116",
   "httpx>=0.28",
+  "lancedb>=0.34",
+  "psycopg[binary]>=3.2",
   "pydantic>=2.11",
   "pydantic-ai>=2.4.0",
   "uvicorn[standard]>=0.35"

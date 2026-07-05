@@ -1,7 +1,7 @@
 id: io.dirextalk.agent
 name: Dirextalk Agent
 version: 0.1.0
-description: Official Dirextalk Agent plugin using Pydantic AI-compatible runtime.
+description: Official Dirextalk Agent plugin using Pydantic AI-compatible runtime with skills, MCP, and optional knowledge base.
 min_base_version: 0.1.0
 runtime:
   type: docker
@@ -17,6 +17,8 @@ permissions:
   - rooms.members.read
   - mcp.call
   - skills.install
+  - knowledge.read
+  - knowledge.write
 events:
   - message.created
   - agent.mentioned
@@ -29,6 +31,16 @@ actions:
   - agent.skills.registry.search
   - agent.mcp.servers.list
   - agent.mcp.registry.search
+  - agent.knowledge.config.get
+  - agent.knowledge.config.update
+  - agent.knowledge.sources.list
+  - agent.knowledge.sources.delete
+  - agent.knowledge.upload.start
+  - agent.knowledge.upload.chunk
+  - agent.knowledge.upload.finish
+  - agent.knowledge.memory.create
+  - agent.knowledge.search
+  - agent.knowledge.status
   - agent.config.propose_patch
   - agent.contacts.list
   - agent.contacts.search
@@ -48,3 +60,18 @@ config_schema:
     type: string
   mcp_registry_url:
     type: string
+  knowledge:
+    type: object
+    properties:
+      enabled:
+        type: boolean
+      embedding_profile:
+        type: request-local
+      ocr_profile:
+        type: request-local
+      vector_index:
+        type: enum
+        values: [lancedb]
+      metadata_store:
+        type: enum
+        values: [postgres, sqlite_fallback]
