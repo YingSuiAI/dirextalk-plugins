@@ -27,6 +27,10 @@ actions:
   - agent.context.compress
   - agent.runtime.inspect
   - agent.runtime.install
+  - agent.runtime.uninstall
+  - agent.runtime.run
+  - agent.runtime.which
+  - agent.runtime.tools.list
   - agent.models.list
   - agent.skills.list
   - agent.skills.install

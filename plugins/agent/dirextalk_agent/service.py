@@ -23,7 +23,14 @@ from .runtime_config import (
     uninstall_mcp_server_setting,
     uninstall_skill_setting,
 )
-from .runtime_tools import install_runtime_tool, runtime_tools_status
+from .runtime_tools import (
+    install_runtime_tool,
+    list_runtime_tool_records,
+    run_runtime_tool,
+    runtime_tools_status,
+    uninstall_runtime_tool,
+    which_runtime_tool,
+)
 
 if TYPE_CHECKING:
     from .knowledge import EmbeddingClient, KnowledgeStore
@@ -67,6 +74,14 @@ class AgentService:
             }
         if action == "agent.runtime.install":
             return await install_runtime_tool(params)
+        if action == "agent.runtime.uninstall":
+            return await uninstall_runtime_tool(params)
+        if action == "agent.runtime.run":
+            return await run_runtime_tool(params)
+        if action == "agent.runtime.tools.list":
+            return {"tools": list_runtime_tool_records(), "status": runtime_tools_status()}
+        if action == "agent.runtime.which":
+            return which_runtime_tool(str(params.get("command") or ""))
         if action == "agent.models.list":
             profile = params.get("model_profile") if isinstance(params.get("model_profile"), dict) else {}
             provider = str(params.get("provider") or profile.get("provider") or self.settings.model.provider).strip()

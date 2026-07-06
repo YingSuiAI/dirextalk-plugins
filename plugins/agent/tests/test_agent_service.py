@@ -287,6 +287,53 @@ def test_runtime_registers_builtin_config_tools_and_summarize_tool(monkeypatch: 
     assert "list_mcp_servers" in agent.tools
     assert "runtime_tools_status" in agent.tools
     assert "install_runtime_tool" in agent.tools
+    assert "uninstall_runtime_tool" in agent.tools
+    assert "run_runtime_tool" in agent.tools
+    assert "which_runtime_tool" in agent.tools
+    assert "list_runtime_tools" in agent.tools
+
+
+def test_runtime_system_prompt_describes_general_tool_installation() -> None:
+    runtime = PydanticAgentRuntime(settings=AgentPluginSettings(), client=FakeDirextalkClient())
+
+    prompt = runtime._system_prompt()
+
+    assert "manager=uv" in prompt
+    assert "manager=npm" in prompt
+    assert "run_runtime_tool" in prompt
+    assert "install_runtime_tool" in prompt
+    assert "uninstall_runtime_tool" in prompt
+
+
+@pytest.mark.asyncio
+async def test_install_skill_can_install_declared_runtime_cli(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    captured: dict = {}
+
+    async def fake_install_runtime_tool(params: dict) -> dict:
+        captured.update(params)
+        return {"ok": True, "records": [{"manager": params["manager"], "package": params["package"]}]}
+
+    monkeypatch.setenv("AGENT_RUNTIME_CONFIG_PATH", str(tmp_path / "runtime_config.json"))
+    monkeypatch.setattr(llm_module, "install_runtime_tool_action", fake_install_runtime_tool)
+    settings = AgentPluginSettings()
+    runtime = PydanticAgentRuntime(settings=settings, client=FakeDirextalkClient())
+    agent = runtime._create_agent(RecordingAgent, settings.model)
+
+    result = await agent.tool_funcs["install_skill"](
+        repo_url="https://github.com/example/agent-skills",
+        path="skills/browser",
+        runtime_manager="npm",
+        runtime_package="opencli",
+        runtime_command="opencli",
+    )
+
+    assert result["runtime_install"]["ok"] is True
+    assert captured["manager"] == "npm"
+    assert captured["package"] == "opencli"
+    assert captured["command"] == "opencli"
+    assert captured["target"] == ""
 
 
 @pytest.mark.asyncio
@@ -590,6 +637,23 @@ async def test_agent_runtime_install_invokes_runtime_tool_installer(monkeypatch:
 
     assert result["ok"] is True
     assert calls == [{"target": "agent-reach-core", "channels": ["xiaohongshu"]}]
+
+
+@pytest.mark.asyncio
+async def test_agent_runtime_uninstall_invokes_runtime_tool_uninstaller(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[dict] = []
+
+    async def fake_uninstall(params):
+        calls.append(params)
+        return {"ok": True, "manager": params["manager"], "package": params["package"], "commands": []}
+
+    monkeypatch.setattr(service_module, "uninstall_runtime_tool", fake_uninstall)
+    service = AgentService(settings=AgentPluginSettings(), client=FakeDirextalkClient())
+
+    result = await service.invoke("agent.runtime.uninstall", {"manager": "npm", "package": "opencli"})
+
+    assert result["ok"] is True
+    assert calls == [{"manager": "npm", "package": "opencli"}]
 
 
 @pytest.mark.asyncio

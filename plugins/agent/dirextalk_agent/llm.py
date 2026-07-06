@@ -25,8 +25,14 @@ from .runtime_config import (
     uninstall_mcp_server_setting,
     uninstall_skill_setting,
 )
-from .runtime_tools import install_runtime_tool as install_runtime_tool_action
-from .runtime_tools import runtime_tools_status as runtime_tools_status_action
+from .runtime_tools import (
+    install_runtime_tool as install_runtime_tool_action,
+    list_runtime_tool_records as list_runtime_tool_records_action,
+    run_runtime_tool as run_runtime_tool_action,
+    runtime_tools_status as runtime_tools_status_action,
+    uninstall_runtime_tool as uninstall_runtime_tool_action,
+    which_runtime_tool as which_runtime_tool_action,
+)
 
 
 class ModelInvocationUnavailable(RuntimeError):
@@ -171,6 +177,11 @@ class PydanticAgentRuntime:
             ref: str = "main",
             enabled: bool = True,
             install_runtime_target: str = "",
+            runtime_manager: str = "",
+            runtime_package: str = "",
+            runtime_command: str = "",
+            runtime_repo_url: str = "",
+            runtime_install_command: str = "",
             channels: list[str] | None = None,
         ) -> dict[str, Any]:
             result = install_skill_setting(
@@ -183,11 +194,35 @@ class PydanticAgentRuntime:
                 },
             )
             self._skill_instruction_cache.clear()
-            if install_runtime_target.strip() == "" and ("agent-reach" in repo_url.lower() or path == "agent-reach"):
-                install_runtime_target = "agent-reach-core"
-            if install_runtime_target.strip():
-                result["runtime_install"] = await install_runtime_tool_action(
-                    {"target": install_runtime_target.strip(), "channels": channels or []}
+            runtime_params: dict[str, Any] = {}
+            has_runtime_request = any(
+                value.strip()
+                for value in [
+                    runtime_manager,
+                    runtime_package,
+                    runtime_command,
+                    runtime_repo_url,
+                    runtime_install_command,
+                ]
+            )
+            if has_runtime_request:
+                runtime_params = {
+                    "target": install_runtime_target.strip(),
+                    "manager": runtime_manager.strip(),
+                    "package": runtime_package.strip(),
+                    "command": runtime_command.strip(),
+                    "repo_url": runtime_repo_url.strip(),
+                    "install_command": runtime_install_command.strip(),
+                    "channels": channels or [],
+                }
+            elif install_runtime_target.strip():
+                runtime_params = {"target": install_runtime_target.strip(), "channels": channels or []}
+            elif "agent-reach" in repo_url.lower() or path == "agent-reach":
+                runtime_params = {"target": "agent-reach-core", "channels": channels or []}
+            if runtime_params:
+                result["runtime_install"] = await safe_tool_result(
+                    "agent.runtime.install",
+                    install_runtime_tool_action(runtime_params),
                 )
             return result
 
@@ -232,11 +267,71 @@ class PydanticAgentRuntime:
             return runtime_tools_status_action()
 
         @agent.tool_plain
-        async def install_runtime_tool(target: str, package: str = "", channels: list[str] | None = None) -> dict[str, Any]:
+        async def install_runtime_tool(
+            target: str = "",
+            manager: str = "",
+            package: str = "",
+            command: str = "",
+            repo_url: str = "",
+            install_command: str = "",
+            channels: list[str] | None = None,
+        ) -> dict[str, Any]:
             return await safe_tool_result(
                 "agent.runtime.install",
-                install_runtime_tool_action({"target": target, "package": package, "channels": channels or []}),
+                install_runtime_tool_action(
+                    {
+                        "target": target,
+                        "manager": manager,
+                        "package": package,
+                        "command": command,
+                        "repo_url": repo_url,
+                        "install_command": install_command,
+                        "channels": channels or [],
+                    }
+                ),
             )
+
+        @agent.tool_plain
+        async def uninstall_runtime_tool(
+            id: str = "",
+            target: str = "",
+            manager: str = "",
+            package: str = "",
+            command: str = "",
+            repo_url: str = "",
+            uninstall_command: str = "",
+            channels: list[str] | None = None,
+        ) -> dict[str, Any]:
+            return await safe_tool_result(
+                "agent.runtime.uninstall",
+                uninstall_runtime_tool_action(
+                    {
+                        "id": id,
+                        "target": target,
+                        "manager": manager,
+                        "package": package,
+                        "command": command,
+                        "repo_url": repo_url,
+                        "uninstall_command": uninstall_command,
+                        "channels": channels or [],
+                    }
+                ),
+            )
+
+        @agent.tool_plain
+        async def run_runtime_tool(command: str, timeout_seconds: int = 60) -> dict[str, Any]:
+            return await safe_tool_result(
+                "agent.runtime.run",
+                run_runtime_tool_action({"command": command, "timeout_seconds": timeout_seconds}),
+            )
+
+        @agent.tool_plain
+        async def which_runtime_tool(command: str) -> dict[str, Any]:
+            return which_runtime_tool_action(command)
+
+        @agent.tool_plain
+        async def list_runtime_tools() -> dict[str, Any]:
+            return {"tools": list_runtime_tool_records_action(), "status": runtime_tools_status_action()}
 
         return agent
 
@@ -250,7 +345,14 @@ class PydanticAgentRuntime:
             parts.append(mcp_prompt)
         parts.append(
             "Dirextalk built-in tools can search contacts and rooms, list messages, send messages, and summarize conversations when enabled. "
-            "Runtime tools can inspect and install CLI capabilities such as agent-reach when the user asks for external internet reach. "
+            "Runtime tools can inspect, install, verify, and run CLI capabilities inside the Agent container. "
+            "When a command is missing, call runtime_tools_status first, then install_runtime_tool with a general manager: "
+            "manager=uv for Python CLI tools via `uv tool install`, manager=npm for Node CLIs via `npm install -g`, "
+            "manager=pip for Python packages, manager=apt for OS packages, manager=git for repositories, or manager=command for a custom install command. "
+            "After installing, call which_runtime_tool or run_runtime_tool with a harmless verification command such as `<tool> --help`. "
+            "Use uninstall_runtime_tool with the installed record id or manager/package when the user asks to remove a CLI or runtime tool. "
+            "Use run_runtime_tool for user-approved command execution and list_runtime_tools to inspect installed records. "
+            "When installing a skill that needs a CLI, pass runtime_manager/runtime_package/runtime_command to install_skill so the skill and tool are configured together. "
             "You may install or uninstall Agent skills and MCP servers with the built-in configuration tools when the user asks."
         )
         return "\n\n".join(parts)
