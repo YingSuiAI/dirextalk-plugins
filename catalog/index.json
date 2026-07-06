@@ -5,12 +5,12 @@
       "id": "io.dirextalk.agent",
       "name": "Dirextalk Agent",
       "version": "0.1.0",
-      "description": "Official Dirextalk Agent plugin using Pydantic AI-compatible runtime.",
+      "description": "Official Dirextalk Agent plugin using Pydantic AI-compatible runtime with skills and MCP support. Knowledge base code is retained but disabled in this release.",
       "min_base_version": "0.1.0",
       "runtime": {
         "type": "docker",
-        "image": "docker.io/dirextalk/agent-plugin",
-        "digest": "sha256:4acd5a6e76fb8ba07b89adff210d21725a2c0801e087108b57a55d65d73a8e5a"
+        "image": "docker.io/dirextalk/agent-plugin:latest",
+        "digest": ""
       },
       "service": {
         "protocol": "http",
@@ -22,7 +22,32 @@
         "matrix.messages.send",
         "rooms.members.read",
         "mcp.call",
-        "skills.install"
+        "skills.install",
+        "runtime.install"
+      ]
+    },
+    {
+      "id": "io.dirextalk.ops",
+      "name": "Dirextalk Ops",
+      "version": "0.1.0",
+      "description": "Official Dirextalk operations plugin for status, backup, migration export, and safe cleanup planning.",
+      "min_base_version": "0.1.0",
+      "runtime": {
+        "type": "docker",
+        "image": "docker.io/dirextalk/ops-plugin:latest",
+        "digest": ""
+      },
+      "service": {
+        "protocol": "http",
+        "health": "/health",
+        "invoke": "/invoke"
+      },
+      "permissions": [
+        "ops.status.read",
+        "ops.backup.write",
+        "ops.cleanup.plan",
+        "ops.cleanup.run",
+        "ops.migration.export"
       ]
     }
   ]

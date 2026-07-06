@@ -22,11 +22,15 @@ class ModelProvider(str, Enum):
 class ModelSettings(BaseModel):
     provider: ModelProvider
     model: str
+    api_key: str = ""
     api_key_ref: str = ""
     base_url: str = ""
     temperature: float = 0.2
     max_output_tokens: int = 2048
     context_window: int = 30
+    reasoning_mode: str = ""
+    top_p: float = 0.0
+    top_k: int = 0
 
     @field_validator("model")
     @classmethod
@@ -34,6 +38,19 @@ class ModelSettings(BaseModel):
         value = value.strip()
         if not value:
             raise ValueError("model is required")
+        return value
+
+
+class ModelProfileSettings(ModelSettings):
+    id: str
+    name: str = ""
+
+    @field_validator("id")
+    @classmethod
+    def id_required(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("profile id is required")
         return value
 
 
@@ -73,10 +90,17 @@ class AgentPluginSettings(BaseModel):
     display_name: str = "Dirextalk Agent"
     system_prompt: str = "You are the local Dirextalk assistant."
     model: ModelSettings = Field(default_factory=lambda: ModelSettings(provider=ModelProvider.openai, model="gpt-4.1"))
+    default_model_profile_id: str = ""
+    model_profiles: list[ModelProfileSettings] = Field(default_factory=list)
     dirextalk: DirextalkSettings = Field(default_factory=DirextalkSettings)
     skills: list[SkillSource] = Field(default_factory=list)
+    skills_registry_url: str = "https://skills.sh"
+    mcp_registry_url: str = "https://registry.modelcontextprotocol.io"
     mcp_servers: list[MCPServerConfig] = Field(default_factory=list)
-    enabled_tools: list[str] = Field(default_factory=lambda: ["search_rooms", "list_messages", "send_message", "summarize_conversation"])
+    enabled_tools: list[str] = Field(
+        default_factory=lambda: ["search_contacts", "search_rooms", "list_messages", "send_message", "summarize_conversation"]
+    )
+    runtime_config_revision: str = ""
     extra: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -93,17 +117,25 @@ def settings_from_environment() -> AgentPluginSettings:
             temperature=env_float("AGENT_TEMPERATURE", 0.2),
             max_output_tokens=env_int("AGENT_MAX_OUTPUT_TOKENS", 2048),
             context_window=env_int("AGENT_CONTEXT_WINDOW", 30),
+            reasoning_mode=os.getenv("AGENT_REASONING_MODE", ""),
+            top_p=env_float("AGENT_TOP_P", 0.0),
+            top_k=env_int("AGENT_TOP_K", 0),
         ),
+        default_model_profile_id=os.getenv("AGENT_DEFAULT_MODEL_PROFILE_ID", ""),
+        model_profiles=parse_model_list("AGENT_MODEL_PROFILES_JSON", ModelProfileSettings),
         dirextalk=DirextalkSettings(
             base_url=os.getenv("DIREXTALK_BASE_URL", "http://message-server:8008"),
             agent_token_ref=os.getenv("DIREXTALK_AGENT_TOKEN_REF", "env:DIREXTALK_AGENT_TOKEN"),
         ),
         skills=parse_model_list("AGENT_SKILLS_JSON", SkillSource),
+        skills_registry_url=os.getenv("AGENT_SKILLS_REGISTRY_URL", "https://skills.sh"),
+        mcp_registry_url=os.getenv("AGENT_MCP_REGISTRY_URL", "https://registry.modelcontextprotocol.io"),
         mcp_servers=parse_model_list("AGENT_MCP_SERVERS_JSON", MCPServerConfig),
         enabled_tools=env_csv(
             "AGENT_ENABLED_TOOLS",
-            ["search_rooms", "list_messages", "send_message", "summarize_conversation"],
+            ["search_contacts", "search_rooms", "list_messages", "send_message", "summarize_conversation"],
         ),
+        runtime_config_revision=os.getenv("AGENT_CONFIG_REVISION", ""),
     )
 
 

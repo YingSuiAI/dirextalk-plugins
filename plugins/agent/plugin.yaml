@@ -1,12 +1,12 @@
 id: io.dirextalk.agent
 name: Dirextalk Agent
 version: 0.1.0
-description: Official Dirextalk Agent plugin using Pydantic AI-compatible runtime.
+description: Official Dirextalk Agent plugin using Pydantic AI-compatible runtime with skills and MCP support. Knowledge base code is retained but disabled in this release.
 min_base_version: 0.1.0
 runtime:
   type: docker
-  image: docker.io/dirextalk/agent-plugin
-  digest: sha256:4acd5a6e76fb8ba07b89adff210d21725a2c0801e087108b57a55d65d73a8e5a
+  image: docker.io/dirextalk/agent-plugin:latest
+  digest: ""
 service:
   protocol: http
   health: /health
@@ -15,22 +15,76 @@ permissions:
   - matrix.messages.read
   - matrix.messages.send
   - rooms.members.read
-  - mcp.call
-  - skills.install
+- mcp.call
+- skills.install
+- runtime.install
 events:
   - message.created
   - agent.mentioned
 actions:
   - agent.chat
-  - agent.summarize
+  - agent.chat.stream
+  - agent.context.compress
+  - agent.runtime.inspect
+  - agent.runtime.install
+  - agent.runtime.uninstall
+  - agent.runtime.run
+  - agent.runtime.which
+  - agent.runtime.tools.list
+  - agent.models.list
+  - agent.skills.list
+  - agent.skills.install
+  - agent.skills.uninstall
+  - agent.skills.registry.search
+  - agent.mcp.servers.list
+  - agent.mcp.servers.install
+  - agent.mcp.servers.uninstall
+  - agent.mcp.registry.search
+  - agent.knowledge.config.get
+  - agent.knowledge.config.update
+  - agent.knowledge.sources.list
+  - agent.knowledge.sources.delete
+  - agent.knowledge.upload.start
+  - agent.knowledge.upload.chunk
+  - agent.knowledge.upload.finish
+  - agent.knowledge.memory.create
+  - agent.knowledge.search
+  - agent.knowledge.status
+  - agent.config.propose_patch
+  - agent.contacts.list
+  - agent.contacts.search
+  - agent.rooms.search
+  - agent.messages.list
   - agent.messages.send
+  - agent.summarize
 config_schema:
   provider:
     type: enum
     values: [openai, anthropic, deepseek, gemini, vertex, openai_compatible, openrouter, litellm]
   model:
     type: string
-  api_key_ref:
-    type: secret
   base_url:
     type: string
+  skills_registry_url:
+    type: string
+  mcp_registry_url:
+    type: string
+  knowledge:
+    type: object
+    properties:
+      supported:
+        type: boolean
+        const: false
+      enabled:
+        type: boolean
+        const: false
+      embedding_profile:
+        type: request-local
+      ocr_profile:
+        type: request-local
+      vector_index:
+        type: enum
+        values: [lancedb]
+      metadata_store:
+        type: enum
+        values: [postgres, sqlite_fallback]

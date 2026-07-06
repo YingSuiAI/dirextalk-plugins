@@ -57,10 +57,19 @@ class FakeDirextalkClient:
 
 async def main():
     settings = AgentPluginSettings(
-        model=ModelSettings(provider="deepseek", model="deepseek-chat", api_key_ref="env:DEEPSEEK_API_KEY"),
+        model=ModelSettings(provider="deepseek", model="deepseek-chat"),
         enabled_tools=[],
     )
-    result = await PydanticAgentRuntime(settings, FakeDirextalkClient()).chat("用中文回答：请只返回四个字：连通正常", {})
+    result = await PydanticAgentRuntime(settings, FakeDirextalkClient()).chat(
+        "用中文回答：请只返回四个字：连通正常",
+        {
+            "model_profile": {
+                "provider": "deepseek",
+                "model": "deepseek-chat",
+                "api_key": "<api-key>",
+            }
+        },
+    )
     print(result["model_ready"], result["text"])
 
 asyncio.run(main())

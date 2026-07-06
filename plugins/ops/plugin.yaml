@@ -1,0 +1,34 @@
+id: io.dirextalk.ops
+name: Dirextalk Ops
+version: 0.1.0
+description: Official Dirextalk operations plugin for status, backup, migration export, and safe cleanup planning.
+runtime:
+  type: docker
+  image: docker.io/dirextalk/ops-plugin:latest
+service:
+  protocol: http
+  health: /health
+  invoke: /invoke
+permissions:
+  - ops.status.read
+  - ops.backup.write
+  - ops.cleanup.plan
+  - ops.cleanup.run
+  - ops.migration.export
+actions:
+  - ops.status.get
+  - ops.containers.list
+  - ops.logs.tail
+  - ops.backups.list
+  - ops.backup.create
+  - ops.backup.status
+  - ops.backup.download_chunk
+  - ops.backup.delete
+  - ops.cleanup.plan
+  - ops.cleanup.run
+  - ops.rooms.cleanup.plan
+  - ops.rooms.cleanup.run
+  - ops.media.orphans.plan
+  - ops.migration.export
+  - ops.restore.plan
+  - ops.restore.run
