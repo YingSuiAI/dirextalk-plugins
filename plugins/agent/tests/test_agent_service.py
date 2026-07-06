@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import httpx
 import pytest
 
@@ -12,7 +14,13 @@ from dirextalk_agent.llm import (
     skills_system_prompt,
 )
 from dirextalk_agent.service import AgentService
-from dirextalk_plugins_runtime import AgentPluginSettings, DirextalkActionError, MCPServerConfig, SkillSource
+from dirextalk_plugins_runtime import (
+    AgentPluginSettings,
+    DirextalkActionError,
+    MCPServerConfig,
+    ModelSettings,
+    SkillSource,
+)
 
 
 class FakeDirextalkClient:
@@ -94,6 +102,76 @@ class RecordingAgent:
         self.tools.append(func.__name__)
         self.tool_funcs[func.__name__] = func
         return func
+
+
+class StreamingGraphAgent(RecordingAgent):
+    instances: list["StreamingGraphAgent"] = []
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.used_run_stream_events = False
+        self.used_run_stream = False
+        StreamingGraphAgent.instances.append(self)
+
+    def run_stream_events(self, prompt: str):
+        self.used_run_stream_events = True
+        self.prompt = prompt
+        return _FakeEventStream(
+            [
+                _text_start("我先检查一下当前可用后端。"),
+                _tool_call("runtime_tools_status"),
+                _tool_result("runtime_tools_status"),
+                _tool_call("agent_reach_search"),
+                _tool_result("agent_reach_search"),
+                _text_delta("已经完成检查，agent-reach 可以继续用于查询。"),
+                _run_result("我先检查一下当前可用后端。已经完成检查，agent-reach 可以继续用于查询。"),
+            ]
+        )
+
+    def run_stream(self, *_args, **_kwargs):
+        self.used_run_stream = True
+        raise AssertionError("run_stream stops after first text output and must not be used for tool-capable chats")
+
+
+class _FakeEventStream:
+    def __init__(self, events):
+        self.events = events
+
+    async def __aenter__(self):
+        async def stream():
+            for event in self.events:
+                yield event
+
+        return stream()
+
+    async def __aexit__(self, *_args):
+        return False
+
+
+def _text_start(text: str):
+    return SimpleNamespace(
+        event_kind="part_start",
+        part=SimpleNamespace(part_kind="text", content=text),
+    )
+
+
+def _text_delta(text: str):
+    return SimpleNamespace(
+        event_kind="part_delta",
+        delta=SimpleNamespace(part_delta_kind="text", content_delta=text),
+    )
+
+
+def _tool_call(name: str):
+    return SimpleNamespace(event_kind="function_tool_call", part=SimpleNamespace(tool_name=name))
+
+
+def _tool_result(name: str):
+    return SimpleNamespace(event_kind="function_tool_result", part=SimpleNamespace(tool_name=name))
+
+
+def _run_result(text: str):
+    return SimpleNamespace(event_kind="agent_run_result", result=SimpleNamespace(output=text))
 
 
 class ErroringDirextalkClient(FakeDirextalkClient):
@@ -223,6 +301,36 @@ async def test_runtime_tools_return_structured_errors_instead_of_raising() -> No
     assert result["status"] == 403
     assert result["action"] == "mcp.messages.list"
     assert "not allowed" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_stream_chat_uses_full_agent_graph_events(monkeypatch: pytest.MonkeyPatch) -> None:
+    import pydantic_ai
+
+    StreamingGraphAgent.instances.clear()
+    monkeypatch.setattr(pydantic_ai, "Agent", StreamingGraphAgent)
+    settings = AgentPluginSettings(
+        model=ModelSettings(provider="openai", model="gpt-4.1", api_key="test-key")
+    )
+    runtime = PydanticAgentRuntime(settings=settings, client=FakeDirextalkClient())
+
+    events = [event async for event in runtime.stream_chat("帮我查询小红书上海美食攻略", {})]
+
+    agent = StreamingGraphAgent.instances[0]
+    assert agent.used_run_stream_events is True
+    assert agent.used_run_stream is False
+    assert events == [
+        {"event": "delta", "data": {"text": "我先检查一下当前可用后端。"}},
+        {"event": "delta", "data": {"text": "已经完成检查，agent-reach 可以继续用于查询。"}},
+        {
+            "event": "done",
+            "data": {
+                "text": "我先检查一下当前可用后端。已经完成检查，agent-reach 可以继续用于查询。",
+                "provider": settings.model.provider,
+                "model": settings.model.model,
+            },
+        },
+    ]
 
 
 def test_prompt_with_attachments_includes_text_content() -> None:

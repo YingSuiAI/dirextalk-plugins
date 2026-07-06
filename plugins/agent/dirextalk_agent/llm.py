@@ -77,20 +77,22 @@ class PydanticAgentRuntime:
 
         prepare_provider_environment(model_settings)
         agent = self._create_agent(Agent, model_settings)
-        if hasattr(agent, "run_stream"):
+        if hasattr(agent, "run_stream_events"):
             text = ""
-            async with agent.run_stream(prompt_with_attachments(prompt, params)) as result:
-                stream_text = getattr(result, "stream_text", None)
-                if stream_text is not None:
-                    async for delta in stream_text(delta=True):
-                        chunk = delta if isinstance(delta, str) else str(delta)
-                        if chunk:
-                            text += chunk
-                            yield {"event": "delta", "data": {"text": chunk}}
-                else:
-                    text = extract_agent_text(result)
-                    if text:
-                        yield {"event": "delta", "data": {"text": text}}
+            final_text = ""
+            async with agent.run_stream_events(prompt_with_attachments(prompt, params)) as events:
+                async for event in events:
+                    chunk = agent_stream_event_text_delta(event)
+                    if chunk:
+                        text += chunk
+                        yield {"event": "delta", "data": {"text": chunk}}
+                    result_text = agent_run_result_event_text(event)
+                    if result_text is not None:
+                        final_text = result_text
+            if final_text:
+                if not text:
+                    yield {"event": "delta", "data": {"text": final_text}}
+                text = final_text
             yield {
                 "event": "done",
                 "data": {
@@ -829,3 +831,25 @@ def extract_agent_text(result: Any) -> str:
             value = getattr(result, attr)
             return value if isinstance(value, str) else str(value)
     return str(result)
+
+
+def agent_stream_event_text_delta(event: Any) -> str:
+    event_kind = str(getattr(event, "event_kind", "") or "")
+    if event_kind == "part_start":
+        part = getattr(event, "part", None)
+        if str(getattr(part, "part_kind", "") or "") == "text":
+            return str(getattr(part, "content", "") or "")
+    if event_kind == "part_delta":
+        delta = getattr(event, "delta", None)
+        if str(getattr(delta, "part_delta_kind", "") or "") == "text":
+            return str(getattr(delta, "content_delta", "") or "")
+    return ""
+
+
+def agent_run_result_event_text(event: Any) -> str | None:
+    if str(getattr(event, "event_kind", "") or "") != "agent_run_result":
+        return None
+    result = getattr(event, "result", None)
+    if result is None:
+        return ""
+    return extract_agent_text(result)
