@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from dirextalk_agent.runtime_tools import runtime_path_env
+from dirextalk_agent.runtime_tools import agent_reach_executable, install_commands, runtime_path_env
 
 
 def test_runtime_path_env_uses_agent_data_volume(monkeypatch, tmp_path):
@@ -25,3 +25,15 @@ def test_runtime_path_env_uses_agent_data_volume(monkeypatch, tmp_path):
     assert tool_root.exists()
     assert tool_bin.exists()
     assert npm_prefix.exists()
+
+
+def test_opencli_is_supported_as_agent_reach_install_target() -> None:
+    assert install_commands(target="opencli", package="", channels=[]) == [
+        [agent_reach_executable(), "install", "--env=auto", "--channels=opencli"]
+    ]
+
+
+def test_agent_reach_channel_defaults_to_opencli_when_channels_are_missing() -> None:
+    assert install_commands(target="agent-reach-channel", package="", channels=[]) == [
+        [agent_reach_executable(), "install", "--env=auto", "--channels=opencli"]
+    ]

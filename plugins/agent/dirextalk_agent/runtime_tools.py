@@ -11,6 +11,17 @@ AGENT_REACH_ZIP = "https://github.com/Panniantong/agent-reach/archive/main.zip"
 DEFAULT_TOOL_ROOT = Path("/var/lib/dirextalk-agent/tools")
 DEFAULT_TOOL_BIN_DIR = Path("/var/lib/dirextalk-agent/bin")
 DEFAULT_NPM_PREFIX = Path("/var/lib/dirextalk-agent/npm")
+AGENT_REACH_CHANNELS = {
+    "opencli": "opencli",
+    "mcporter": "mcporter",
+    "bili": "bili",
+    "twitter": "twitter",
+    "rdt": "rdt",
+    "gh": "gh",
+    "yt-dlp": "yt-dlp",
+    "ytdlp": "yt-dlp",
+}
+DEFAULT_AGENT_REACH_CHANNEL = "opencli"
 
 
 def runtime_path_env() -> dict[str, str]:
@@ -65,6 +76,7 @@ def runtime_tools_status() -> dict[str, Any]:
         "install_targets": [
             "agent-reach-core",
             "agent-reach-channel",
+            *AGENT_REACH_CHANNELS.keys(),
             "npm-global",
             "uv-tool",
             "pip-package",
@@ -77,14 +89,12 @@ async def install_runtime_tool(params: dict[str, Any]) -> dict[str, Any]:
     target = str(params.get("target") or "").strip()
     if not target:
         raise ValueError("target is required")
-    channels = params.get("channels") or []
-    if isinstance(channels, str):
-        channels = [item.strip() for item in channels.split(",") if item.strip()]
+    channels = normalize_channels(params.get("channels") or [])
     if not isinstance(channels, list):
         raise ValueError("channels must be a list or comma-separated string")
     package = str(params.get("package") or "").strip()
 
-    commands = install_commands(target=target, package=package, channels=[str(item).strip() for item in channels if str(item).strip()])
+    commands = install_commands(target=target, package=package, channels=channels)
     results = []
     for command in commands:
         results.append(await run_command(command))
@@ -92,6 +102,7 @@ async def install_runtime_tool(params: dict[str, Any]) -> dict[str, Any]:
 
 
 def install_commands(*, target: str, package: str, channels: list[str]) -> list[list[str]]:
+    target, package, channels = normalize_install_request(target=target, package=package, channels=channels)
     if target == "agent-reach-core":
         commands = [
             ["uv", "tool", "install", "--force", AGENT_REACH_ZIP],
@@ -102,7 +113,7 @@ def install_commands(*, target: str, package: str, channels: list[str]) -> list[
         return commands
     if target == "agent-reach-channel":
         if not channels:
-            raise ValueError("channels are required for agent-reach-channel")
+            channels = [DEFAULT_AGENT_REACH_CHANNEL]
         return [[agent_reach_executable(), "install", "--env=auto", "--channels=" + ",".join(channels)]]
     if target == "npm-global":
         if not package:
@@ -122,6 +133,55 @@ def install_commands(*, target: str, package: str, channels: list[str]) -> list[
         packages = [item for item in package.split() if item]
         return [["apt-get", "update"], ["apt-get", "install", "-y", "--no-install-recommends", *packages]]
     raise ValueError(f"unknown install target {target}")
+
+
+def normalize_install_request(*, target: str, package: str, channels: list[str]) -> tuple[str, str, list[str]]:
+    target_key = install_key(target)
+    normalized_channels = normalize_channels(channels)
+    if target_key in {"agentreach", "agentreachcore"}:
+        return "agent-reach-core", package, normalized_channels
+    channel = canonical_agent_reach_channel(target_key)
+    if channel:
+        return "agent-reach-channel", package, merge_channels([channel], normalized_channels)
+    if target_key == "agentreachchannel":
+        if not normalized_channels:
+            package_channel = canonical_agent_reach_channel(install_key(package))
+            if package_channel:
+                normalized_channels = [package_channel]
+                package = ""
+        if not normalized_channels:
+            normalized_channels = [DEFAULT_AGENT_REACH_CHANNEL]
+        return "agent-reach-channel", package, normalized_channels
+    return target, package, normalized_channels
+
+
+def normalize_channels(channels: Any) -> list[str]:
+    if isinstance(channels, str):
+        raw = [item.strip() for item in channels.split(",") if item.strip()]
+    elif isinstance(channels, list):
+        raw = [str(item).strip() for item in channels if str(item).strip()]
+    else:
+        return channels
+    normalized: list[str] = []
+    for item in raw:
+        normalized.append(canonical_agent_reach_channel(install_key(item)) or item)
+    return merge_channels([], normalized)
+
+
+def merge_channels(primary: list[str], secondary: list[str]) -> list[str]:
+    result: list[str] = []
+    for item in [*primary, *secondary]:
+        if item and item not in result:
+            result.append(item)
+    return result
+
+
+def canonical_agent_reach_channel(value: str) -> str:
+    return AGENT_REACH_CHANNELS.get(value, "")
+
+
+def install_key(value: str) -> str:
+    return value.strip().lower().replace("-", "").replace("_", "")
 
 
 def agent_reach_executable() -> str:

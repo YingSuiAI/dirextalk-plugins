@@ -233,7 +233,10 @@ class PydanticAgentRuntime:
 
         @agent.tool_plain
         async def install_runtime_tool(target: str, package: str = "", channels: list[str] | None = None) -> dict[str, Any]:
-            return await install_runtime_tool_action({"target": target, "package": package, "channels": channels or []})
+            return await safe_tool_result(
+                "agent.runtime.install",
+                install_runtime_tool_action({"target": target, "package": package, "channels": channels or []}),
+            )
 
         return agent
 
