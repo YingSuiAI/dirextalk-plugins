@@ -8,6 +8,7 @@ The message server remains the capability boundary:
 - Dirextalk tools call existing `mcp.*` body actions.
 - The plugin must not connect directly to the core Matrix/Dirextalk database.
 - The plugin must not store owner access tokens.
+- The Agent production image installs only the `agent` extra. Ops-only and deferred knowledge dependencies must not be included in the Agent image.
 
 ## Model Providers
 
@@ -43,3 +44,7 @@ External MCP server configs support `stdio`, `streamable_http`, and `sse` transp
 - remote server metadata becomes `streamable_http` or `sse` config.
 
 The Agent Docker image includes Node/npm/npx and Python `uv`/`uvx` so registry-installed MCP servers can run inside the Agent container. Third-party MCP servers stay inside the Agent plugin boundary; they do not run in `dirextalk-message-server` and do not receive owner tokens.
+
+## Knowledge Base Status
+
+Knowledge base code and action names are retained for compatibility, but the first-version Agent runtime reports `supported=false` and does not load vector/index dependencies. Clients should hide knowledge UI unless a future runtime reports support.

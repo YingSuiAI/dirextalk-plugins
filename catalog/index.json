@@ -5,7 +5,7 @@
       "id": "io.dirextalk.agent",
       "name": "Dirextalk Agent",
       "version": "0.1.0",
-      "description": "Official Dirextalk Agent plugin using Pydantic AI-compatible runtime with skills, MCP, and optional knowledge base.",
+      "description": "Official Dirextalk Agent plugin using Pydantic AI-compatible runtime with skills and MCP support. Knowledge base code is retained but disabled in this release.",
       "min_base_version": "0.1.0",
       "runtime": {
         "type": "docker",
@@ -23,8 +23,7 @@
         "rooms.members.read",
         "mcp.call",
         "skills.install",
-        "knowledge.read",
-        "knowledge.write"
+        "runtime.install"
       ]
     },
     {

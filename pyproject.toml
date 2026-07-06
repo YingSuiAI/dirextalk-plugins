@@ -10,15 +10,24 @@ requires-python = ">=3.12"
 dependencies = [
   "fastapi>=0.116",
   "httpx>=0.28",
-  "lancedb>=0.34",
-  "psycopg[binary]>=3.2",
   "pydantic>=2.11",
-  "pydantic-ai>=2.4.0",
-  "uvicorn[standard]>=0.35"
+  "uvicorn>=0.35",
+  "websockets>=11"
 ]
 
 [project.optional-dependencies]
+agent = [
+  "pydantic-ai-slim[anthropic,google,mcp,openai]>=2.4.0"
+]
+ops = []
+knowledge = [
+  "lancedb>=0.34",
+  "psycopg[binary]>=3.2"
+]
 test = [
+  "lancedb>=0.34",
+  "psycopg[binary]>=3.2",
+  "pydantic-ai-slim[anthropic,google,mcp,openai]>=2.4.0",
   "pytest>=8.4",
   "pytest-asyncio>=0.25"
 ]

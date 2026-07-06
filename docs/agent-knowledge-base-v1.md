@@ -1,16 +1,34 @@
-# Agent Knowledge Base v1
+# Agent Knowledge Base Deferred Plan
 
 ## Business Background
 
-The first knowledge base release is an optional module inside the official
-`io.dirextalk.agent` plugin. It targets single-user private deployments where
-the server is small and should not run local LLM, embedding, reranker, OCR, or
-standalone vector database services.
+Knowledge base code is retained inside the official `io.dirextalk.agent`
+plugin repository, but the first production release marks it unsupported. The
+runtime returns `supported=false`, rejects enabling/upload/write actions, does
+not load vector/index dependencies, and clients hide knowledge UI by default.
 
-The feature lets users upload documents or add manual memory, then opt into
+The deferred design targets single-user private deployments where the server is
+small and should not run local LLM, embedding, reranker, OCR, or standalone
+vector database services.
+
+When enabled in a future release, the feature will let users upload documents or add manual memory, then opt into
 knowledge retrieval for Agent conversations. Model API keys stay client-local:
 the client sends the selected chat model and embedding/OCR profiles only with
 the current plugin request.
+
+## Current Release Status
+
+- `agent.knowledge.config.get` and `agent.knowledge.status` return
+  `supported=false`, `enabled=false`, and `status="unsupported"`.
+- `agent.knowledge.sources.list` and `agent.knowledge.search` return empty
+  result lists with the same unsupported status.
+- Enabling, upload, delete, and memory-write actions are rejected with a clear
+  unsupported error.
+- Production Agent and Ops images do not install the `knowledge` dependency
+  extra, so LanceDB and Postgres knowledge client packages stay out of the
+  first-version runtime.
+- Flutter keeps the knowledge code path in place but does not render or invoke
+  it while support is disabled.
 
 ## Architecture
 
@@ -74,12 +92,13 @@ Manual memory and retrieval:
 - `agent.knowledge.memory.create`
 - `agent.knowledge.search`
 
-Conversation:
+Future conversation flow:
 
-When the client sends `knowledge_enabled=true`, the Agent plugin embeds the
-current prompt, searches knowledge chunks, prepends a compact `Knowledge
-Context` section to the model prompt, and returns `knowledge_sources` in the
-stream `done` event so the client can show file-name references.
+When support is re-enabled and the client sends `knowledge_enabled=true`, the
+Agent plugin will embed the current prompt, search knowledge chunks, prepend a
+compact `Knowledge Context` section to the model prompt, and return
+`knowledge_sources` in the stream `done` event so the client can show file-name
+references.
 
 ## Resource Policy
 
@@ -91,11 +110,10 @@ stream `done` event so the client can show file-name references.
 - Idle cache release: 10 minutes.
 - No local model or OCR process is started by this release.
 
-## Implemented Verification
+## Verification Target
 
-- Plugin tests cover embedding-profile gating, text upload/search, PDF OCR
-  gating, and chat prompt injection.
+- Plugin tests cover the unsupported first-version behavior.
 - Message-server tests cover Agent knowledge action allowlist, Agent data
   volume validation, runtime env, and client-local model-key behavior.
-- Flutter tests cover the Agent plugin settings and chat model flow; the
-  knowledge UI is integrated without reintroducing JSON configuration fields.
+- Flutter tests cover that first-version chat requests do not send knowledge
+  parameters even if old local knowledge settings exist.

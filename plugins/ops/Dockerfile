@@ -17,7 +17,7 @@ COPY pyproject.toml /app/pyproject.toml
 COPY runtime/python /app/runtime/python
 COPY plugins/ops /app/plugins/ops
 
-RUN pip install --no-cache-dir -e .
+RUN pip install --no-cache-dir ".[ops]"
 
 EXPOSE 8080
 CMD ["uvicorn", "dirextalk_ops.app:app", "--host", "0.0.0.0", "--port", "8080"]

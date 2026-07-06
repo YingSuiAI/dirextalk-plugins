@@ -21,6 +21,8 @@ Ops is the only official plugin allowed to mount:
 
 It does not receive owner access token or Agent token.
 
+The Ops plugin is implemented as a small Python/FastAPI HTTP plugin because it needs a stable `/health` and `/invoke` service, async backup job polling, and structured JSON responses around Docker CLI and PostgreSQL backup commands. Its production image installs only the shared runtime plus the `ops` extra; it must not include Agent provider/MCP packages, LanceDB, or knowledge dependencies.
+
 ## Actions
 
 - `ops.status.get`

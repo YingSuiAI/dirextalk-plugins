@@ -9,10 +9,11 @@ from .config import (
     SkillSource,
     settings_from_environment,
 )
-from .dirextalk import DirextalkClient
+from .dirextalk import DirextalkActionError, DirextalkClient
 
 __all__ = [
     "AgentPluginSettings",
+    "DirextalkActionError",
     "DirextalkClient",
     "MCPServerConfig",
     "ModelProfileSettings",

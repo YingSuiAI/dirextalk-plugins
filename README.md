@@ -6,9 +6,17 @@ This repository contains the plugin contract, shared Python runtime helpers, fir
 
 ## Official Plugins
 
-`io.dirextalk.agent` is the official Agent plugin. It runs as a separate container, uses Pydantic AI for model orchestration, discovers provider model lists, installs skills from skills.sh-compatible registries, including current `/api/search` fallback responses, installs third-party MCP servers from MCP Registry-compatible metadata, and calls Dirextalk through backend capability actions instead of reading or writing the homeserver database directly.
+`io.dirextalk.agent` is the official Agent plugin. It runs as a separate container, uses Pydantic AI for model orchestration, discovers provider model lists, installs skills from skills.sh-compatible registries, including current `/api/search` fallback responses, installs third-party MCP servers from MCP Registry-compatible metadata, and calls Dirextalk through backend capability actions instead of reading or writing the homeserver database directly. Knowledge base code is retained in-tree but disabled for this release.
 
 `io.dirextalk.ops` is the official Ops plugin for single-node private deployments. It reports server/container/database/disk/backup status, creates backup and migration export packages, supports chunked backup download, and exposes plan-first cleanup for temp files, old backups, room cache/hide/archive workflows, and media cache/orphan previews.
+
+## Dependency Isolation
+
+Each official plugin image is built as an independent runtime environment. Shared helpers live in `runtime/python`, while plugin-specific packages are installed through extras:
+
+- Agent image: `pip install ".[agent]"` for Pydantic AI provider/MCP support plus Agent code. It must not install Ops-only packages.
+- Ops image: `pip install ".[ops]"` for the shared HTTP runtime plus Ops code. It must not install Agent, MCP, provider, LanceDB, or knowledge dependencies.
+- Knowledge dependencies stay behind the `knowledge` extra and are not installed by either first-version production image.
 
 ## Layout
 
@@ -27,4 +35,11 @@ python3 -m venv .venv
 . .venv/bin/activate
 pip install -e ".[test]"
 pytest
+```
+
+For image smoke checks, build each plugin Dockerfile separately so dependency drift is visible:
+
+```bash
+docker build -f plugins/agent/Dockerfile -t dirextalk/agent-plugin:dev .
+docker build -f plugins/ops/Dockerfile -t dirextalk/ops-plugin:dev .
 ```

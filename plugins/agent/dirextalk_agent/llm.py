@@ -9,7 +9,24 @@ from urllib.parse import urlparse
 
 import httpx
 
-from dirextalk_plugins_runtime import AgentPluginSettings, DirextalkClient, MCPServerConfig, ModelProvider, ModelSettings, SkillSource
+from dirextalk_plugins_runtime import (
+    AgentPluginSettings,
+    DirextalkActionError,
+    DirextalkClient,
+    MCPServerConfig,
+    ModelProvider,
+    ModelSettings,
+    SkillSource,
+)
+
+from .runtime_config import (
+    install_mcp_server_setting,
+    install_skill_setting,
+    uninstall_mcp_server_setting,
+    uninstall_skill_setting,
+)
+from .runtime_tools import install_runtime_tool as install_runtime_tool_action
+from .runtime_tools import runtime_tools_status as runtime_tools_status_action
 
 
 class ModelInvocationUnavailable(RuntimeError):
@@ -105,7 +122,7 @@ class PydanticAgentRuntime:
                 query: str = "",
                 limit: int = 20,
             ) -> dict[str, Any]:
-                return await self.client.list_contacts(query=query, limit=limit)
+                return await safe_tool_result("mcp.contacts.search", self.client.list_contacts(query=query, limit=limit))
 
         if "search_rooms" in self.settings.enabled_tools:
 
@@ -115,25 +132,30 @@ class PydanticAgentRuntime:
                 room_type: str = "all",
                 limit: int = 20,
             ) -> dict[str, Any]:
-                return await self.client.search_rooms(query=query, room_type=room_type, limit=limit)
+                return await safe_tool_result(
+                    "mcp.rooms.search",
+                    self.client.search_rooms(query=query, room_type=room_type, limit=limit),
+                )
 
         if "list_messages" in self.settings.enabled_tools:
 
             @agent.tool_plain
             async def list_messages(room_id: str, limit: int = 50) -> dict[str, Any]:
-                return await self.client.list_messages(room_id=room_id, limit=limit)
+                return await safe_tool_result("mcp.messages.list", self.client.list_messages(room_id=room_id, limit=limit))
 
         if "send_message" in self.settings.enabled_tools:
 
             @agent.tool_plain
             async def send_message(room_id: str, msg: str) -> dict[str, Any]:
-                return await self.client.send_message(room_id=room_id, msg=msg)
+                return await safe_tool_result("mcp.messages.send", self.client.send_message(room_id=room_id, msg=msg))
 
         if "summarize_conversation" in self.settings.enabled_tools:
 
             @agent.tool_plain
             async def summarize_conversation(room_id: str, limit: int = 100) -> dict[str, Any]:
-                messages = await self.client.list_messages(room_id=room_id, limit=limit)
+                messages = await safe_tool_result("mcp.messages.list", self.client.list_messages(room_id=room_id, limit=limit))
+                if messages.get("ok") is False:
+                    return messages
                 return {"room_id": room_id, "summary": summarize_messages(messages)}
 
         @agent.tool_plain
@@ -141,8 +163,75 @@ class PydanticAgentRuntime:
             return {"skills": [skill.model_dump(mode="json") for skill in self.settings.skills]}
 
         @agent.tool_plain
+        async def install_skill(
+            repo_url: str,
+            path: str,
+            ref: str = "main",
+            enabled: bool = True,
+            install_runtime_target: str = "",
+            channels: list[str] | None = None,
+        ) -> dict[str, Any]:
+            result = install_skill_setting(
+                self.settings,
+                {
+                    "repo_url": repo_url,
+                    "path": path,
+                    "ref": ref,
+                    "enabled": enabled,
+                },
+            )
+            self._skill_instruction_cache.clear()
+            if install_runtime_target.strip() == "" and ("agent-reach" in repo_url.lower() or path == "agent-reach"):
+                install_runtime_target = "agent-reach-core"
+            if install_runtime_target.strip():
+                result["runtime_install"] = await install_runtime_tool_action(
+                    {"target": install_runtime_target.strip(), "channels": channels or []}
+                )
+            return result
+
+        @agent.tool_plain
+        async def uninstall_skill(key: str = "", repo_url: str = "", path: str = "") -> dict[str, Any]:
+            self._skill_instruction_cache.clear()
+            return uninstall_skill_setting(self.settings, {"key": key or path, "repo_url": repo_url})
+
+        @agent.tool_plain
         async def list_mcp_servers() -> dict[str, Any]:
             return {"servers": await mcp_servers_with_runtime_status(self.settings.mcp_servers)}
+
+        @agent.tool_plain
+        async def install_mcp_server(
+            name: str,
+            transport: str = "stdio",
+            command: list[str] | None = None,
+            url: str = "",
+            enabled: bool = True,
+            timeout_ms: int = 30000,
+        ) -> dict[str, Any]:
+            return install_mcp_server_setting(
+                self.settings,
+                {
+                    "mcp_server": {
+                        "name": name,
+                        "transport": transport,
+                        "command": command or [],
+                        "url": url,
+                        "enabled": enabled,
+                        "timeout_ms": timeout_ms,
+                    }
+                },
+            )
+
+        @agent.tool_plain
+        async def uninstall_mcp_server(name: str) -> dict[str, Any]:
+            return uninstall_mcp_server_setting(self.settings, {"name": name})
+
+        @agent.tool_plain
+        async def runtime_tools_status() -> dict[str, Any]:
+            return runtime_tools_status_action()
+
+        @agent.tool_plain
+        async def install_runtime_tool(target: str, package: str = "", channels: list[str] | None = None) -> dict[str, Any]:
+            return await install_runtime_tool_action({"target": target, "package": package, "channels": channels or []})
 
         return agent
 
@@ -155,9 +244,30 @@ class PydanticAgentRuntime:
         if mcp_prompt:
             parts.append(mcp_prompt)
         parts.append(
-            "Dirextalk built-in tools can search contacts and rooms, list messages, send messages, and summarize conversations when enabled."
+            "Dirextalk built-in tools can search contacts and rooms, list messages, send messages, and summarize conversations when enabled. "
+            "Runtime tools can inspect and install CLI capabilities such as agent-reach when the user asks for external internet reach. "
+            "You may install or uninstall Agent skills and MCP servers with the built-in configuration tools when the user asks."
         )
         return "\n\n".join(parts)
+
+
+async def safe_tool_result(action: str, awaitable: Any) -> dict[str, Any]:
+    try:
+        result = await awaitable
+        if isinstance(result, dict):
+            return result
+        return {"ok": True, "result": result}
+    except DirextalkActionError as exc:
+        return {
+            "ok": False,
+            "action": exc.action or action,
+            "status": exc.status_code,
+            "error": exc.error,
+        }
+    except httpx.HTTPError as exc:
+        return {"ok": False, "action": action, "error": str(exc)}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "action": action, "error": str(exc)}
 
 
 def skills_system_prompt(skills: list[SkillSource], cache: dict[str, str] | None = None) -> str:

@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import os
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from dirextalk_plugins_runtime import AgentPluginSettings, DirextalkClient
 
-from .knowledge import EmbeddingClient, KnowledgeStore, openai_compatible_embeddings
 from .llm import (
     AgentRuntime,
     ModelInvocationUnavailable,
@@ -18,6 +16,20 @@ from .llm import (
     secret_value,
 )
 from .registry import search_mcp_servers, search_skills
+from .runtime_config import (
+    apply_runtime_config_overlay,
+    install_mcp_server_setting,
+    install_skill_setting,
+    uninstall_mcp_server_setting,
+    uninstall_skill_setting,
+)
+from .runtime_tools import install_runtime_tool, runtime_tools_status
+
+if TYPE_CHECKING:
+    from .knowledge import EmbeddingClient, KnowledgeStore
+
+
+KNOWLEDGE_UNSUPPORTED_MESSAGE = "knowledge base is not supported in this version"
 
 
 class AgentService:
@@ -29,13 +41,14 @@ class AgentService:
         knowledge_store: KnowledgeStore | None = None,
         embedding_client: EmbeddingClient | None = None,
     ) -> None:
+        apply_runtime_config_overlay(settings)
         self.settings = settings
         self.client = client
         self.runtime = runtime or PydanticAgentRuntime(settings=settings, client=client)
-        self.knowledge_store = knowledge_store or KnowledgeStore(
-            os.getenv("AGENT_KNOWLEDGE_DIR", "/var/lib/dirextalk-agent/knowledge")
-        )
-        self.embedding_client = embedding_client or openai_compatible_embeddings
+        # First release keeps the knowledge code in-tree, but does not load its
+        # vector/index dependencies or expose it as a supported runtime feature.
+        self.knowledge_store = knowledge_store
+        self.embedding_client = embedding_client
 
     async def invoke(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
         if action == "agent.tools.list":
@@ -48,8 +61,12 @@ class AgentService:
             model_settings = resolve_model_settings(self.settings, params)
             return {
                 "model": safe_model_settings(model_settings),
+                "skills": [skill.model_dump(mode="json") for skill in self.settings.skills],
                 "mcp_servers": await configured_mcp_servers_with_runtime_status(self.settings.mcp_servers),
+                "runtime_tools": runtime_tools_status(),
             }
+        if action == "agent.runtime.install":
+            return await install_runtime_tool(params)
         if action == "agent.models.list":
             profile = params.get("model_profile") if isinstance(params.get("model_profile"), dict) else {}
             provider = str(params.get("provider") or profile.get("provider") or self.settings.model.provider).strip()
@@ -62,6 +79,14 @@ class AgentService:
             return await list_provider_models(provider=provider, base_url=base_url, api_key=api_key)
         if action == "agent.skills.list":
             return {"skills": [skill.model_dump(mode="json") for skill in self.settings.skills]}
+        if action == "agent.skills.install":
+            result = install_skill_setting(self.settings, params)
+            self.runtime = PydanticAgentRuntime(settings=self.settings, client=self.client)
+            return result
+        if action == "agent.skills.uninstall":
+            result = uninstall_skill_setting(self.settings, params)
+            self.runtime = PydanticAgentRuntime(settings=self.settings, client=self.client)
+            return result
         if action == "agent.skills.registry.search":
             return await search_skills(
                 registry_url=str(params.get("registry_url") or self.settings.skills_registry_url),
@@ -71,6 +96,14 @@ class AgentService:
             )
         if action == "agent.mcp.servers.list":
             return {"servers": await configured_mcp_servers_with_runtime_status(self.settings.mcp_servers)}
+        if action == "agent.mcp.servers.install":
+            result = install_mcp_server_setting(self.settings, params)
+            self.runtime = PydanticAgentRuntime(settings=self.settings, client=self.client)
+            return result
+        if action == "agent.mcp.servers.uninstall":
+            result = uninstall_mcp_server_setting(self.settings, params)
+            self.runtime = PydanticAgentRuntime(settings=self.settings, client=self.client)
+            return result
         if action == "agent.mcp.registry.search":
             return await search_mcp_servers(
                 registry_url=str(params.get("registry_url") or self.settings.mcp_registry_url),
@@ -199,65 +232,41 @@ class AgentService:
             }
 
     async def _invoke_knowledge(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
+        unsupported = unsupported_knowledge_payload()
         if action == "agent.knowledge.config.get":
-            return self.knowledge_store.config_get()
+            return unsupported
         if action == "agent.knowledge.config.update":
-            return self.knowledge_store.config_update(params)
+            if truthy(params.get("enabled")):
+                raise ValueError(KNOWLEDGE_UNSUPPORTED_MESSAGE)
+            return unsupported
         if action == "agent.knowledge.sources.list":
-            return self.knowledge_store.sources_list()
-        if action == "agent.knowledge.sources.delete":
-            return self.knowledge_store.source_delete(str(params.get("source_id") or ""))
-        if action == "agent.knowledge.upload.start":
-            return self.knowledge_store.upload_start(params)
-        if action == "agent.knowledge.upload.chunk":
-            return self.knowledge_store.upload_chunk(params)
-        if action == "agent.knowledge.upload.finish":
-            return await self.knowledge_store.upload_finish(params, embedding_client=self.embedding_client)
-        if action == "agent.knowledge.memory.create":
-            return await self.knowledge_store.memory_create(params, embedding_client=self.embedding_client)
+            return {**unsupported, "sources": []}
         if action == "agent.knowledge.search":
-            return await self.knowledge_store.search(params, embedding_client=self.embedding_client)
+            return {**unsupported, "results": []}
         if action == "agent.knowledge.status":
-            return self.knowledge_store.status()
+            return unsupported
+        if action in {
+            "agent.knowledge.sources.delete",
+            "agent.knowledge.upload.start",
+            "agent.knowledge.upload.chunk",
+            "agent.knowledge.upload.finish",
+            "agent.knowledge.memory.create",
+        }:
+            raise ValueError(KNOWLEDGE_UNSUPPORTED_MESSAGE)
         raise ValueError(f"unknown agent action {action}")
 
     async def _prompt_with_knowledge(self, prompt: str, params: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
-        if not truthy(params.get("knowledge_enabled")):
-            self.knowledge_store.release_idle_cache()
-            return prompt, []
-        search_params = {
-            "query": prompt,
-            "embedding_profile": params.get("embedding_profile"),
-            "source_ids": params.get("knowledge_source_ids") or params.get("source_ids") or [],
-            "top_k": params.get("knowledge_top_k") or params.get("top_k") or 5,
-        }
-        search_result = await self.knowledge_store.search(search_params, embedding_client=self.embedding_client)
-        sources = search_result.get("results") if isinstance(search_result, dict) else []
-        if not isinstance(sources, list) or not sources:
-            return prompt, []
-        lines = ["Knowledge Context:"]
-        knowledge_sources: list[dict[str, Any]] = []
-        for index, source in enumerate(sources[:8], start=1):
-            if not isinstance(source, dict):
-                continue
-            title = str(source.get("title") or source.get("source_title") or "Knowledge")
-            text = str(source.get("text") or source.get("summary") or "").strip()
-            if not text:
-                continue
-            lines.append(f"[{index}] {title}: {text[:1200]}")
-            knowledge_sources.append(
-                {
-                    "source_id": source.get("source_id"),
-                    "chunk_id": source.get("chunk_id"),
-                    "title": title,
-                    "summary": str(source.get("summary") or text[:240]),
-                    "score": source.get("score"),
-                }
-            )
-        if not knowledge_sources:
-            return prompt, []
-        lines.extend(["", "User Request:", prompt])
-        return "\n".join(lines).strip(), knowledge_sources
+        return prompt, []
+
+
+def unsupported_knowledge_payload() -> dict[str, Any]:
+    return {
+        "ok": True,
+        "supported": False,
+        "enabled": False,
+        "status": "unsupported",
+        "message": KNOWLEDGE_UNSUPPORTED_MESSAGE,
+    }
 
 
 def summarize_messages(messages: dict[str, Any]) -> str:

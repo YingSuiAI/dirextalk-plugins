@@ -12,7 +12,7 @@ from dirextalk_agent.llm import (
     skills_system_prompt,
 )
 from dirextalk_agent.service import AgentService
-from dirextalk_plugins_runtime import AgentPluginSettings, MCPServerConfig, SkillSource
+from dirextalk_plugins_runtime import AgentPluginSettings, DirextalkActionError, MCPServerConfig, SkillSource
 
 
 class FakeDirextalkClient:
@@ -88,10 +88,22 @@ class RecordingAgent:
         self.system_prompt = system_prompt
         self.toolsets = toolsets or []
         self.tools: list[str] = []
+        self.tool_funcs = {}
 
     def tool_plain(self, func):
         self.tools.append(func.__name__)
+        self.tool_funcs[func.__name__] = func
         return func
+
+
+class ErroringDirextalkClient(FakeDirextalkClient):
+    async def list_messages(self, room_id: str, limit: int = 50, from_ts: int = 0, to_ts: int = 0):
+        raise DirextalkActionError(
+            action="mcp.messages.list",
+            status_code=403,
+            error="room is not allowed for MCP access",
+            body={"error": "room is not allowed for MCP access"},
+        )
 
 
 def test_pydantic_agent_runtime_registers_dirextalk_tools_with_real_agent(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -195,6 +207,22 @@ def test_runtime_registers_builtin_config_tools_and_summarize_tool(monkeypatch: 
     assert "summarize_conversation" in agent.tools
     assert "list_installed_skills" in agent.tools
     assert "list_mcp_servers" in agent.tools
+    assert "runtime_tools_status" in agent.tools
+    assert "install_runtime_tool" in agent.tools
+
+
+@pytest.mark.asyncio
+async def test_runtime_tools_return_structured_errors_instead_of_raising() -> None:
+    settings = AgentPluginSettings()
+    runtime = PydanticAgentRuntime(settings=settings, client=ErroringDirextalkClient())
+
+    agent = runtime._create_agent(RecordingAgent, settings.model)
+    result = await agent.tool_funcs["list_messages"]("!missing:example.com")
+
+    assert result["ok"] is False
+    assert result["status"] == 403
+    assert result["action"] == "mcp.messages.list"
+    assert "not allowed" in result["error"]
 
 
 def test_prompt_with_attachments_includes_text_content() -> None:
@@ -433,8 +461,72 @@ async def test_agent_runtime_inspect_reports_request_model_and_mcp_status(monkey
     assert result["model"]["context_window"] == 128
     assert result["model"]["max_output_tokens"] == 7368
     assert "api_key" not in result["model"]
+    assert result["skills"] == []
     assert result["mcp_servers"][1]["runtime_status"] == "ready"
     assert result["mcp_servers"][1]["tool_count"] == 2
+    assert "runtime_tools" in result
+
+
+@pytest.mark.asyncio
+async def test_agent_runtime_install_invokes_runtime_tool_installer(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[dict] = []
+
+    async def fake_install(params):
+        calls.append(params)
+        return {"ok": True, "target": params["target"], "commands": []}
+
+    monkeypatch.setattr(service_module, "install_runtime_tool", fake_install)
+    service = AgentService(settings=AgentPluginSettings(), client=FakeDirextalkClient())
+
+    result = await service.invoke("agent.runtime.install", {"target": "agent-reach-core", "channels": ["xiaohongshu"]})
+
+    assert result["ok"] is True
+    assert calls == [{"target": "agent-reach-core", "channels": ["xiaohongshu"]}]
+
+
+@pytest.mark.asyncio
+async def test_agent_chat_managed_skills_persist_by_config_revision(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    monkeypatch.setenv("AGENT_RUNTIME_CONFIG_PATH", str(tmp_path / "runtime_config.json"))
+    service = AgentService(settings=AgentPluginSettings(runtime_config_revision="rev1"), client=FakeDirextalkClient())
+
+    installed = await service.invoke(
+        "agent.skills.install",
+        {
+            "repo_url": "https://github.com/panniantong/agent-reach",
+            "ref": "main",
+            "path": "agent-reach",
+            "enabled": True,
+        },
+    )
+    assert installed["skills"][0]["path"] == "agent-reach"
+
+    reloaded = AgentService(settings=AgentPluginSettings(runtime_config_revision="rev1"), client=FakeDirextalkClient())
+    skills = await reloaded.invoke("agent.skills.list", {})
+    assert skills["skills"][0]["path"] == "agent-reach"
+
+    stale_revision = AgentService(settings=AgentPluginSettings(runtime_config_revision="rev2"), client=FakeDirextalkClient())
+    skills = await stale_revision.invoke("agent.skills.list", {})
+    assert skills["skills"] == []
+
+
+@pytest.mark.asyncio
+async def test_agent_can_uninstall_runtime_managed_skill(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    monkeypatch.setenv("AGENT_RUNTIME_CONFIG_PATH", str(tmp_path / "runtime_config.json"))
+    service = AgentService(settings=AgentPluginSettings(runtime_config_revision="rev1"), client=FakeDirextalkClient())
+    await service.invoke(
+        "agent.skills.install",
+        {
+            "repo_url": "https://github.com/panniantong/agent-reach",
+            "ref": "main",
+            "path": "agent-reach",
+            "enabled": True,
+        },
+    )
+
+    removed = await service.invoke("agent.skills.uninstall", {"path": "agent-reach"})
+
+    assert removed["removed"] == 1
+    assert removed["skills"] == []
 
 
 @pytest.mark.asyncio

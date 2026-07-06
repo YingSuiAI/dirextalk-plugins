@@ -100,6 +100,7 @@ class AgentPluginSettings(BaseModel):
     enabled_tools: list[str] = Field(
         default_factory=lambda: ["search_contacts", "search_rooms", "list_messages", "send_message", "summarize_conversation"]
     )
+    runtime_config_revision: str = ""
     extra: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -134,6 +135,7 @@ def settings_from_environment() -> AgentPluginSettings:
             "AGENT_ENABLED_TOOLS",
             ["search_contacts", "search_rooms", "list_messages", "send_message", "summarize_conversation"],
         ),
+        runtime_config_revision=os.getenv("AGENT_CONFIG_REVISION", ""),
     )
 
 
